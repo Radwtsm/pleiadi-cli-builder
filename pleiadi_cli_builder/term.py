@@ -9,12 +9,16 @@ WIN, MAC = os.name == "nt", sys.platform == "darwin"
 
 TEXTS = {
     "it": {"hint": "↑↓ scegli · Invio conferma · Ctrl+C esci", "hint_resume": "riprende da dove eri",
+           "hint_idle": "Ctrl+C esci", "hint_type": "scrivi · Invio conferma · Ctrl+C esci",
+           "hint_read": "↑↓ PgSu PgGiù scorri · Inizio Fine · / cerca · n successiva · Spazio apre/chiude · q chiudi",
            "recommended": "(consigliata)", "type_number": "Scrivi il numero e premi Invio:", "yes": "Sì", "no": "No",
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
            "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)",
            "empty": "niente da mostrare", "rows": "{n} righe", "row": "1 riga"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
+           "hint_idle": "Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
+           "hint_read": "↑↓ PgUp PgDn scroll · Home End · / search · n next · Space fold · q close",
            "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
@@ -139,7 +143,7 @@ class Screen:
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
-        self.refresh = False
+        self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.head, self.body, self.foot, self.last = [], [], "", []
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
 
@@ -209,7 +213,7 @@ class Screen:
             self.size = shutil.get_terminal_size((80, 24))
             w, h = self.size.columns, self.size.lines
             head = [clip(r, w) for r in self.head] if h >= len(self.head) + 8 else []
-            foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or self.c(self.theme.dim, "  " + self.t["hint"]), w)]
+            foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or self.dim("  " + self.hint()), w)]
             room = max(1, h - len(head) - len(foot))
             body = [clip(r, w) for r in self.body[-room:]]
             body += [""] * (room - len(body))
@@ -225,6 +229,14 @@ class Screen:
         elif self.colors:
             sys.stdout.write("\033[2J\033[3J\033[H")
             sys.stdout.flush()
+
+    def hint(self):
+        """Only the keys that work now (owner: «arrows» shown with nothing to choose was a bug), plus the open
+        menu-session accesses («VPN aperta da 4 min»)."""
+        from .access import status_line
+        h = self.t.get({"choose": "hint", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
+        st = status_line()
+        return h + (f" · {st}" if st else "")
 
     # ── colors ──
     def c(self, code, text):
@@ -253,7 +265,7 @@ class Screen:
             self.open()
             self.draw()
         else:
-            self.box(lines + [self.dim(f"  {self.t['hint']} ({self.t['hint_resume']})")])
+            self.box(lines + [self.dim(f"  {self.t['hint_idle']} ({self.t['hint_resume']})")])
 
     def frame(self, lines):
         vis = [visible_len(r) for r in lines]
@@ -331,6 +343,10 @@ class Screen:
         if self.json:
             print(mask(json.dumps(obj, ensure_ascii=False, indent=1)))
         return self.json
+
+    @property
+    def interactive(self):
+        return sys.stdin.isatty() and not self.no_input
 
     def secret_input(self, question):
         """A hidden answer (a token, a password): never shown, never kept on screen."""
@@ -433,6 +449,7 @@ class Screen:
             note = self.dim(rec) if i == 0 and len(o) + len(rec) + 1 <= w else ""
             return (self.acc(f"  {self.theme.prompt} {i + 1}. {o}") if i == sel else f"    {i + 1}. {o}") + note
         sel, n = 0, len(options)
+        self.mode = "choose"
 
         def move(k):
             return ((sel - 1) % n if k == "up" else (sel + 1) % n if k == "down" else
@@ -452,6 +469,7 @@ class Screen:
                 self.draw()
             with self.lock:
                 self.body[start:] = ["    " + self.acc(self.theme.prompt + " ") + options[sel]]
+            self.mode = "idle"
             self.draw()
             return sel
         sys.stdout.write("\033[?25l")
@@ -473,6 +491,7 @@ class Screen:
                 sys.stdout.write("\n")
                 sys.stdout.flush()
         finally:
+            self.mode = "idle"
             sys.stdout.write("\033[?25h")
             sys.stdout.flush()
 
@@ -481,6 +500,7 @@ class Screen:
         self.out("")
         self.out("  " + self.acc("?") + " " + self.bold(question) + self.dim(f" [{default}]" if default else ""))
         text = ""
+        self.mode = "type"
         sys.stdout.write("\033[?25h")
         try:
             while True:
@@ -494,7 +514,7 @@ class Screen:
                 elif len(k) == 1 and k.isprintable():
                     text += k
         finally:
-            self.foot = ""
+            self.foot, self.mode = "", "idle"
             sys.stdout.write("\033[?25l")
         self.out("    " + self.acc(self.theme.prompt + " ") + (text.strip() or self.dim(default or "—")))
         return text.strip() or default

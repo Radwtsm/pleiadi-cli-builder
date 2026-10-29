@@ -8,9 +8,11 @@ un'istantanea dei dati (`--aggiorna` per riscaricarla), tabella o `--json`.
 |---|---|
 | `pm-kit setup` | chiede indirizzo e utente (file JSON) e la chiave API (portachiavi); si può rilanciare |
 | `pm-kit doctor` | configurazione, chiave, Redmine che risponde, impronta del certificato che scade |
-| `pm-kit progetti` | ogni progetto attivo: aperte, in ritardo, chiuse negli ultimi 7 giorni, avanzamento, ultima attività; i più a rischio prima |
-| `pm-kit stato PROGETTO` | per stato, per persona, in ritardo, scadenze dei prossimi 14 giorni |
-| `pm-kit mie` | le task aperte assegnate a me |
+| `pm-kit mie` | le task aperte assegnate a me: il download leggero, per tutti |
+| `pm-kit task --progetto ID --stato aperte\|chiuse\|tutte --persona me\|ID --scadenza GIORNI --testo PAROLA` | una ricerca filtrata sul server (al massimo 200 risultati) |
+| `pm-kit progetti --tutti` | per chi segue i progetti: ogni progetto attivo con aperte, in ritardo, chiuse in 7 giorni, avanzamento, ultima attività; scarica tutto, quindi vuole `--tutti`, `"ruolo": "pm"` o una conferma nel menu |
+| `pm-kit stato PROGETTO --tutti` | per stato, per persona, in ritardo, scadenze dei prossimi 14 giorni |
+| `pm-kit copia si\|no\|cancella` | la copia locale dei dati: attiva, disattiva, cancella |
 
 Configurazione (`~/.config/pm-kit/config.json`, o il percorso in `PM_KIT_CONFIG`): `url` e `user`; se serve
 `ca_file` (CA interna) oppure `pin_sha256` + `pin_expires` (vedi `pleiadi-cli-builder impronta HOST`), e `vpn` con

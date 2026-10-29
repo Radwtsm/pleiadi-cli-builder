@@ -4,6 +4,8 @@ in a header (never in the URL), an internal CA file or a pinned certificate fing
 never verification turned off."""
 import datetime, hashlib, http.client, json, socket, ssl, time, urllib.error, urllib.parse, urllib.request
 
+from .term import progress
+
 
 class HTTPError(Exception):
     def __init__(self, status, url, body=""):
@@ -53,14 +55,16 @@ class ReadOnlyClient:
             ...
     """
     def __init__(self, base_url, token=None, header="Authorization", scheme="Bearer", timeout=30, retries=3,
-                 ca_file=None, pin_sha256=None, pin_expires=None, agent="pleiadi-cli-builder"):
+                 ca_file=None, pin_sha256=None, pin_expires=None, agent="pleiadi-cli-builder", rate=(60, 60)):
+        """rate = (requests, seconds): at most that many in any window; beyond it the client waits and says so in
+        the spinner line — many queries in a row never hammer the server."""
         if not base_url.startswith("https://") and not base_url.startswith("http://localhost") \
                 and not base_url.startswith("http://127.0.0.1"):
             raise ValueError("https only (http just for localhost)")
         if pin_sha256 and not pin_expires:
             raise ValueError("a pinned fingerprint needs its expiry date (pin_expires='YYYY-MM-DD')")
         self.base, self.timeout, self.retries = base_url.rstrip("/"), timeout, retries
-        self.pin_expires = pin_expires
+        self.pin_expires, self.rate, self.sent = pin_expires, rate, []
         self.headers = {"Accept": "application/json", "User-Agent": agent}
         if token:
             self.headers[header] = f"{scheme} {token}".strip()
@@ -77,6 +81,7 @@ class ReadOnlyClient:
     def get(self, path, params=None):
         """GET → parsed JSON. Retries 429/5xx and network errors with backoff; other errors raise HTTPError."""
         url = self.url(path, params)
+        self._throttle()
         for attempt in range(self.retries + 1):
             try:
                 req = urllib.request.Request(url, headers=self.headers, method="GET")
@@ -95,6 +100,17 @@ class ReadOnlyClient:
                     raise  # a certificate problem doesn't get better by retrying
                 time.sleep(2 ** attempt)
 
+    def _throttle(self):
+        n, window = self.rate
+        now = time.time()
+        self.sent = [t for t in self.sent if now - t < window]
+        if len(self.sent) >= n:
+            wait = window - (now - self.sent[0])
+            progress(None, f"troppe richieste di seguito: aspetto {max(1, round(wait))} s")
+            time.sleep(max(0.0, wait))
+            self.sent = self.sent[1:]
+        self.sent.append(time.time())
+
     def pages(self, path, params=None, items="items", limit=100, limit_param="limit", offset_param="offset",
               total="total_count", max_items=10000):
         """Every item of a paged list (offset/limit style, with the total in `total`), up to max_items."""
@@ -108,7 +124,12 @@ class ReadOnlyClient:
                 if seen >= max_items:
                     return
             offset += len(batch)
-            if not batch or (total in (data or {}) and offset >= data[total]):
+            n = (data or {}).get(total)
+            if isinstance(n, int) and n > 0:  # «1200/4800 issues» and the bar in the open spinner line
+                progress(min(1.0, offset / n), f"{offset}/{n} {items}")
+            else:
+                progress(None, f"{offset} {items}")
+            if not batch or (isinstance(n, int) and offset >= n):
                 return
 
 

@@ -1,7 +1,7 @@
 """Secrets (tokens, API keys) in the system keychain: macOS Keychain, Windows Credential Manager, Linux Secret
 Service (secret-tool). Asked once with hidden input, stored there, never in a file, an argument or an env file of
 the tool. No keychain = asked every time, kept only in memory."""
-import subprocess, sys
+import re, subprocess, sys
 
 from .term import MAC, SECRETS, WIN
 
@@ -179,6 +179,40 @@ def system_keychain():
 
 
 KEYCHAIN = None
+CLIPBOARD = None  # {"read": fn, "clear": fn}; None = the system clipboard (tests replace it)
+
+
+def _clipboard():
+    if CLIPBOARD:
+        return CLIPBOARD
+    from shutil import which
+    run = lambda *c, **k: subprocess.run(list(c), capture_output=True, text=True, encoding="utf-8", **k)
+    if MAC:
+        return {"read": lambda: run("pbpaste").stdout, "clear": lambda: run("pbcopy", input="")}
+    if WIN:
+        return {"read": lambda: run("powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw").stdout,
+                "clear": lambda: run("cmd", "/c", "type nul | clip")}
+    if which("wl-paste"):
+        return {"read": lambda: run("wl-paste", "-n").stdout, "clear": lambda: run("wl-copy", "--clear")}
+    if which("xclip"):
+        return {"read": lambda: run("xclip", "-o", "-selection", "clipboard").stdout,
+                "clear": lambda: run("xclip", "-i", "-selection", "clipboard", "/dev/null")}
+    return None
+
+
+def check_secret(value, validate=None):
+    """(clean value, None) or (None, why): spaces around are dropped; control characters (a Ctrl+V that a hidden
+    prompt took literally), spaces inside, or a value not matching `validate` (a regex for the whole value, or a
+    function) are refused — before anything is stored."""
+    v = (value or "").strip()
+    if not v:
+        return None, "vuota"
+    if any(ord(c) < 32 or ord(c) == 127 for c in v):
+        return None, "contiene caratteri di controllo (incollata con Ctrl+V? usa il clic destro, o Invio vuoto per gli appunti)"
+    if any(c.isspace() for c in v):
+        return None, "contiene spazi"
+    ok = validate(v) if callable(validate) else (re.fullmatch(validate, v) if validate else True)
+    return (v, None) if ok else (None, "non ha il formato atteso")
 
 
 def keychain():
@@ -188,12 +222,14 @@ def keychain():
     return KEYCHAIN
 
 
-def secret(service, account, screen=None, question=None, source=None):
+def secret(service, account, screen=None, question=None, source=None, validate=None, tries=3):
     """The secret for (service, account): from the keychain, or asked once with hidden input and stored there.
     Returns None when it is missing and nobody can answer. `service` = your tool's name + what it is for (e.g.
     "deploy-kit.tracker"); `account` = the user or the server it belongs to.
     source = a read-only store kept by another tool (CommandSource, ProtectedFile): read from there only — never
-    asked, never stored — with the same guarantees (never in arguments, masked in every output)."""
+    asked, never stored — with the same guarantees (never in arguments, masked in every output).
+    validate = the expected format (regex for the whole value, or a function): checked with check_secret before
+    storing; an empty answer offers the clipboard, which is cleared after reading."""
     if source is not None:
         v = source.get(service, account)
         if v:
@@ -204,13 +240,21 @@ def secret(service, account, screen=None, question=None, source=None):
     if v:
         SECRETS.add(v)
         return v
-    if screen is None or not sys.stdin.isatty():
+    if screen is None or not getattr(screen, "interactive", sys.stdin.isatty()):
         return None
-    v = screen.secret_input(question or f"{service} ({account}):")
-    if v:
-        SECRETS.add(v)
-        k.set(service, account, v)
-    return v or None
+    for _ in range(tries):
+        raw = screen.secret_input(question or f"{service} ({account}):")
+        clip = _clipboard() if not (raw or "").strip() else None
+        if clip and screen.confirm("Prendo il valore dagli appunti (poi li svuoto)?", "Sì, dagli appunti", "No"):
+            raw = clip["read"]()
+            clip["clear"]()
+        v, why = check_secret(raw, validate)
+        if v:
+            SECRETS.add(v)
+            k.set(service, account, v)
+            return v
+        screen.todo(f"Non salvato: {why}. Riprova.")
+    return None
 
 
 def forget(service, account):

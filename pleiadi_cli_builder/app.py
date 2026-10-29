@@ -2,7 +2,7 @@
 usage generated from the commands; state kept per computer in ~/.config/<name>/state.json (never secrets)."""
 import json, os, re, sys, time
 
-from . import proc
+from . import access, proc
 from .term import MAC, WIN, Screen, Theme
 
 HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci", "Invio per tornare al menu",
@@ -11,6 +11,30 @@ HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci",
                "unknown command", "read-only", "--dry-run", "snapshot of {when} · --refresh to download it again")}
 DRY_FLAGS = ("--prova", "--dry-run")
 REFRESH_FLAGS = ("--aggiorna", "--refresh")
+NOTES = {"it": {"first": "Primo download: ci vuole di più (minuti, se i dati sono tanti); poi i comandi leggono la copia "
+                         "locale e rispondono subito. --aggiorna riscarica.",
+                "again": "Riscarico i dati.", "last": "l'ultima volta: {m}",
+                "memory": "Copia locale disattivata: i dati restano solo in memoria, ogni avvio riscarica tutto.",
+                "done": "scaricati {n} elementi in {m}, da ora la copia locale.",
+                "done_memory": "scaricati {n} elementi in {m}.",
+                "cooldown": "Dati scaricati {ago} fa: si riscaricano al massimo ogni {limit} min, uso questi."},
+         "en": {"first": "First download: it takes longer (minutes, with a lot of data); then commands read the local copy "
+                         "and answer at once. --refresh downloads again.",
+                "again": "Downloading the data again.", "last": "last time: {m}",
+                "memory": "Local copy off: data stays in memory only, every start downloads everything.",
+                "done": "downloaded {n} items in {m}, from now on the local copy.",
+                "done_memory": "downloaded {n} items in {m}.",
+                "cooldown": "Data downloaded {ago} ago: refreshed at most every {limit} min, using it."}}
+
+
+def _minutes(sec):
+    return f"{sec / 60:.0f} min" if sec >= 90 else f"{sec:.0f} s"
+
+
+def _count(data):
+    if isinstance(data, dict):
+        return sum(len(v) for v in data.values() if isinstance(v, list)) or len(data)
+    return len(data) if isinstance(data, list) else 1
 JSON_FLAG = "--json"
 
 
@@ -45,9 +69,12 @@ class App:
         app.main()
     """
     def __init__(self, name, title="", accent=None, theme=None, lang="it", first_run=None, menu_subtitle="",
-                 write_commands=()):
+                 write_commands=(), session_idle_minutes=5):
         """write_commands = the programs that change something, as the start of their command line
-        (e.g. [["git", "push"], ["rm"]]): run() refuses them inside read-only commands and dry runs."""
+        (e.g. [["git", "push"], ["rm"]]): run() refuses them inside read-only commands and dry runs.
+        session_idle_minutes = in the interactive menu, an access (VPN) stays open between actions and closes
+        after this many minutes without actions (always on exit)."""
+        self.session_idle_minutes, self._memory = session_idle_minutes, {}
         self.name, self.title, self.lang = name, title or name, lang
         self.write_commands = [list(w) for w in write_commands]
         self.theme = theme or Theme(**({"accent": Theme.rgb(accent) if accent.startswith("#") else accent} if accent else {}))
@@ -79,25 +106,65 @@ class App:
             raise ValueError(f"{path}: not valid JSON (configuration is data, never code)") from None
 
     # ── snapshots ──
-    def snapshot(self, name, fetch, refresh=False):
-        """(data, "YYYY-MM-DD HH:MM"): data fetched once (e.g. while temporary() keeps a VPN open) and kept in the
-        user's cache, readable by that user only; later calls read it back until refresh=True (--aggiorna/--refresh
-        sets screen.refresh). Filter it locally: the remote service is asked once. It is a copy of the data on this
-        disk: for data under a company's policy, check that the policy allows it."""
+    def _snap_path(self, name):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
             raise ValueError(f"snapshot name {name!r}: letters, digits, - and _ only")
-        path = os.path.join(self.cache_dir, name + ".json")
-        if not refresh:
-            old = read_json(path)
-            if isinstance(old, dict) and "taken" in old:
+        return os.path.join(self.cache_dir, name + ".json")
+
+    def snapshot(self, name, fetch, refresh=False, keep=True, screen=None, min_refresh_minutes=0):
+        """(data, "YYYY-MM-DD HH:MM"): data fetched once (e.g. while temporary() keeps a VPN open), then read back
+        until refresh=True (--aggiorna/--refresh sets screen.refresh). keep=True: a copy in the user's cache,
+        readable by that user only, kept between runs; keep=False: in memory for this run only, nothing on disk.
+        With `screen`: before a download a line says how long it may take (and how long it took last time),
+        after it how many items came. It is a copy of the data: for data under a company's policy, check it.
+        min_refresh_minutes: a refresh asked sooner than this after the last download uses the copy and says so
+        (repeated --aggiorna don't hammer the server)."""
+        path, n = self._snap_path(name), NOTES.get(self.lang, NOTES["en"])
+        old = read_json(path) if keep else self._memory.get(name)  # keep=True: the disk copy is the truth
+        if isinstance(old, dict) and "taken" in old:
+            ago = time.time() - old.get("at", 0)
+            if not refresh:
                 return old.get("data"), old["taken"]
+            if ago < min_refresh_minutes * 60:
+                if screen:
+                    screen.info(n["cooldown"].format(ago=_minutes(ago), limit=min_refresh_minutes))
+                return old.get("data"), old["taken"]
+        if screen:
+            lines = [n["again"] if old else n["first"] if keep else ""] + ([] if keep else [n["memory"]])
+            if isinstance(old, dict) and "seconds" in old:
+                lines.append(n["last"].format(m=_minutes(old["seconds"])))
+            screen.info(" ".join(x for x in lines if x))
+        start = time.time()
         data, taken = fetch(), time.strftime("%Y-%m-%d %H:%M")
+        snap = {"taken": taken, "at": time.time(), "seconds": round(time.time() - start, 1), "data": data}
+        if screen:
+            screen.info(n["done" if keep else "done_memory"].format(n=_count(data), m=_minutes(snap["seconds"])))
+        if not keep:
+            self._memory[name] = snap
+            return data, taken
+        self._memory.pop(name, None)
         os.makedirs(self.cache_dir, exist_ok=True)
         fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # created private, not chmod later
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            json.dump({"taken": taken, "data": data}, f, ensure_ascii=False)
+            json.dump(snap, f, ensure_ascii=False)
         os.replace(path + ".tmp", path)
         return data, taken
+
+    def snapshot_info(self, name):
+        """(path, bytes, taken) of the local copy, or None (no copy on disk)."""
+        path = self._snap_path(name)
+        old = read_json(path)
+        if not isinstance(old, dict):
+            return None
+        return path, os.path.getsize(path), old.get("taken", "")
+
+    def forget_snapshot(self, name):
+        """Deletes the local copy (and the in-memory one): True if there was one."""
+        path, had = self._snap_path(name), self._memory.pop(name, None) is not None
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        return had
 
     def snapshot_note(self, when):
         return HELP.get(self.lang, HELP["en"])[8].format(when=when)
@@ -130,17 +197,18 @@ class App:
         code = 0
         screen.clear()
         screen.header(self.menu_subtitle)
-        while True:  # back to the menu after each item, until «Quit»
-            i = screen.choose(t[2], [c.menu for c in items] + [t[3]])
-            if i == len(items):
-                return code
-            code = self.call(items[i], screen, [])
-            screen.results = []  # each item's summary counts only its own steps
-            if not sys.stdin.isatty():
-                return code
-            screen.ask(screen.dim(t[4]))
-            screen.clear()
-            screen.header(self.menu_subtitle)
+        with access.session(self.session_idle_minutes):  # a VPN opened for one action serves the next ones
+            while True:  # back to the menu after each item, until «Quit»
+                i = screen.choose(t[2], [c.menu for c in items] + [t[3]])
+                if i == len(items):
+                    return code
+                code = self.call(items[i], screen, [])
+                screen.results = []  # each item's summary counts only its own steps
+                if not sys.stdin.isatty():
+                    return code
+                screen.ask(screen.dim(t[4]))
+                screen.clear()
+                screen.header(self.menu_subtitle)
 
     def main(self, argv=None):
         argv = sys.argv[1:] if argv is None else argv

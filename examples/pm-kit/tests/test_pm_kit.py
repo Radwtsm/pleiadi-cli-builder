@@ -33,6 +33,7 @@ ISSUES = [  # (project, status, assignee, due, done, closed_on)
 
 class FakeRedmine(http.server.BaseHTTPRequestHandler):
     down = False  # True: every request fails (proves a run used the snapshot)
+    paths = []  # every request path (proves what a command did NOT download)
 
     def log_message(self, *a):
         pass
@@ -48,6 +49,7 @@ class FakeRedmine(http.server.BaseHTTPRequestHandler):
             return self.send(500)
         if self.headers.get("X-Redmine-API-Key") != KEY:
             return self.send(401)
+        FakeRedmine.paths.append(self.path.split("?")[0])
         url = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         if url.path == "/users/current.json":
@@ -57,6 +59,13 @@ class FakeRedmine(http.server.BaseHTTPRequestHandler):
         elif url.path == "/issues.json":
             st = q.get("status_id", "open")
             items = [i for i in ISSUES if st == "*" or (st == "closed") == i["status"]["is_closed"]]
+            if q.get("project_id"):
+                p = next(x for x in PROJECTS if q["project_id"] in (x["identifier"], str(x["id"])))
+                items = [i for i in items if i["project"]["id"] == p["id"]]
+            if q.get("subject", "").startswith("~"):
+                items = [i for i in items if q["subject"][1:].lower() in i["subject"].lower()]
+            if q.get("due_date", "").startswith("<="):
+                items = [i for i in items if i.get("due_date") and i["due_date"] <= q["due_date"][2:]]
             if q.get("assigned_to_id") == "me":
                 items = [i for i in items if i.get("assigned_to", {}).get("id") == 7]
             if q.get("closed_on", "").startswith(">="):
@@ -121,6 +130,7 @@ class Commands(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"PM_KIT_CONFIG": cfg})
         self.env.start()
         app.cache_dir = os.path.join(self.home, "cache")
+        app._memory.clear()  # each test starts with no in-memory copy
 
     def tearDown(self):
         self.env.stop()
@@ -128,13 +138,13 @@ class Commands(unittest.TestCase):
         term.SECRETS.clear()
 
     def test_progetti_json_and_snapshot(self):
-        code, out, err = quiet(lambda: app.main(["progetti", "--json"]))
+        code, out, err = quiet(lambda: app.main(["progetti", "--tutti", "--json"]))
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)[0]["progetto"], "Sito nuovo")
         self.assertNotIn(KEY, out + err)
         FakeRedmine.down = True  # second run: from the snapshot, no request
         try:
-            code, out, err = quiet(lambda: app.main(["progetti"]))
+            code, out, err = quiet(lambda: app.main(["progetti", "--tutti"]))
             self.assertEqual(code, 0, err)
             self.assertIn("Sito nuovo", out)
             self.assertIn("istantanea del", out)
@@ -142,13 +152,79 @@ class Commands(unittest.TestCase):
             FakeRedmine.down = False
 
     def test_stato_and_mie(self):
-        code, out, err = quiet(lambda: app.main(["stato", "sito", "--json", "--aggiorna"]))
+        code, out, err = quiet(lambda: app.main(["stato", "sito", "--tutti", "--json", "--aggiorna"]))
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["progetto"], "Sito nuovo")
         code, out, err = quiet(lambda: app.main(["mie", "--json"]))
         self.assertEqual(sorted(t["id"] for t in json.loads(out)), [101, 103])
-        code, out, err = quiet(lambda: app.main(["stato", "nessuno"]))
+        code, out, err = quiet(lambda: app.main(["stato", "nessuno", "--tutti"]))
         self.assertEqual(code, 1)
+
+    def test_default_is_only_my_tasks(self):
+        FakeRedmine.paths.clear()
+        code, out, err = quiet(lambda: app.main(["mie", "--json"]))
+        self.assertEqual(sorted(t["id"] for t in json.loads(out)), [101, 103])
+        self.assertNotIn("/projects.json", FakeRedmine.paths)  # nothing beyond my own tasks
+        code, out, err = quiet(lambda: app.main(["progetti", "--json"]))
+        self.assertEqual((code, json.loads(out)), (1, []))
+        self.assertIn("--tutti", err)
+        self.assertNotIn("/projects.json", FakeRedmine.paths)
+
+    def test_pm_role_needs_no_flag(self):
+        self.set_config(ruolo="pm")
+        code, out, err = quiet(lambda: app.main(["progetti", "--json"]))
+        self.assertEqual(code, 0, err)
+
+    def test_task_filters(self):
+        code, out, err = quiet(lambda: app.main(["task", "--progetto", "sito", "--persona", "me", "--json"]))
+        self.assertEqual(sorted(t["id"] for t in json.loads(out)), [101, 103])
+        code, out, err = quiet(lambda: app.main(["task", "--testo", "menu", "--json"]))
+        self.assertEqual([t["id"] for t in json.loads(out)], [103])
+        code, out, err = quiet(lambda: app.main(["task", "--scadenza", "0", "--json"]))  # due by today: late ones
+        self.assertEqual(sorted(t["id"] for t in json.loads(out)), [101, 103])
+        code, out, err = quiet(lambda: app.main(["task", "--colore", "blu"]))
+        self.assertEqual(code, 2)
+
+    def test_refresh_not_too_often(self):
+        quiet(lambda: app.main(["progetti", "--tutti"]))
+        FakeRedmine.paths.clear()
+        code, out, err = quiet(lambda: app.main(["progetti", "--tutti", "--aggiorna"]))
+        self.assertIn("al massimo ogni", " ".join(out.split()))
+        self.assertEqual(FakeRedmine.paths, [])
+
+    def set_config(self, **kv):
+        cfg = os.environ["PM_KIT_CONFIG"]
+        with open(cfg) as f:
+            c = json.load(f)
+        c.update(kv)
+        with open(cfg, "w") as f:
+            json.dump(c, f)
+
+    def test_only_some_projects(self):
+        self.set_config(progetti=["app"])
+        code, out, err = quiet(lambda: app.main(["progetti", "--tutti", "--json", "--aggiorna"]))
+        self.assertEqual([r["progetto"] for r in json.loads(out)], ["App interna"])
+
+    def test_local_copy_off_writes_nothing(self):
+        self.set_config(copia_locale=False)
+        code, out, err = quiet(lambda: app.main(["progetti", "--tutti"]))
+        self.assertEqual(code, 0, err)
+        self.assertIn("ogni avvio riscarica", " ".join(out.split()))
+        self.assertFalse(os.path.exists(app.cache_dir))
+
+    def test_local_copy_on_info_and_delete(self):
+        self.set_config(copia_locale=True)
+        quiet(lambda: app.main(["progetti", "--tutti"]))
+        code, out, err = quiet(lambda: app.main(["doctor"]))
+        self.assertIn("redmine.json", out)
+        self.assertIn("presa il", out)
+        code, out, err = quiet(lambda: app.main(["copia", "cancella", "--prova"]))
+        self.assertTrue(os.path.exists(os.path.join(app.cache_dir, "redmine.json")))
+        code, out, err = quiet(lambda: app.main(["copia", "cancella"]))
+        self.assertFalse(os.path.exists(os.path.join(app.cache_dir, "redmine.json")))
+        quiet(lambda: app.main(["copia", "no"]))
+        with open(os.environ["PM_KIT_CONFIG"]) as f:
+            self.assertIs(json.load(f)["copia_locale"], False)
 
     def test_doctor(self):
         code, out, err = quiet(lambda: app.main(["doctor"]))

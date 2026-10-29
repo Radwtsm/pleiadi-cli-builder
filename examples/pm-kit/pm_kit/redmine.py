@@ -3,16 +3,66 @@ numbers come out of the snapshot, the tests and any other interface."""
 import datetime
 
 
-def fetch_all(client, today, days=7):
+def fetch_all(client, today, days=7, only=None):
     """Everything the commands need, in one go (inside one VPN window): who I am, active projects, open issues,
-    issues closed in the last `days`."""
+    issues closed in the last `days`. only = identifiers (or ids) of the projects to download, the rest is skipped
+    (a big tracker: minutes less)."""
     since = (today - datetime.timedelta(days=days)).isoformat()
+    projects = list(client.pages("/projects.json", {"status": 1}, items="projects"))
+    if only:
+        wanted = {str(x) for x in only}
+        projects = [p for p in projects if str(p.get("identifier")) in wanted or str(p["id"]) in wanted]
+    scopes = [{"project_id": p.get("identifier") or p["id"]} for p in projects] if only else [{}]
+    issues = lambda q: [i for s in scopes for i in client.pages("/issues.json", {**q, **s}, items="issues")]
     return {
         "user": (client.get("/users/current.json") or {}).get("user") or {},
-        "projects": list(client.pages("/projects.json", {"status": 1}, items="projects")),
-        "open": list(client.pages("/issues.json", {"status_id": "open", "sort": "updated_on:desc"}, items="issues")),
-        "closed": list(client.pages("/issues.json", {"status_id": "closed", "closed_on": ">=" + since}, items="issues")),
+        "projects": projects,
+        "open": issues({"status_id": "open", "sort": "updated_on:desc"}),
+        "closed": issues({"status_id": "closed", "closed_on": ">=" + since}),
     }
+
+
+def fetch_mine(client):
+    """The light download everyone does: who I am and my open tasks (no projects, no other people's tasks)."""
+    return {"user": (client.get("/users/current.json") or {}).get("user") or {},
+            "open": list(client.pages("/issues.json", {"status_id": "open", "assigned_to_id": "me"}, items="issues"))}
+
+
+FILTERS = {"--progetto": "project_id", "--stato": "status_id", "--persona": "assigned_to_id", "--scadenza": "due_date",
+           "--testo": "subject"}
+STATES = {"aperte": "open", "chiuse": "closed", "tutte": "*"}
+
+
+def parse_filters(args):
+    """`--progetto sito --persona me …` → Redmine query parameters. ValueError on an unknown filter or value.
+    No filters = my open tasks."""
+    q, it = {"status_id": "open"}, iter(args)
+    for a in it:
+        if a not in FILTERS:
+            raise ValueError(f"filtro sconosciuto {a!r}: {', '.join(FILTERS)}")
+        v = next(it, None)
+        if v is None:
+            raise ValueError(f"{a} vuole un valore")
+        if a == "--stato":
+            if v not in STATES:
+                raise ValueError(f"--stato {', '.join(STATES)}")
+            v = STATES[v]
+        elif a == "--scadenza":
+            if not v.isdigit():
+                raise ValueError("--scadenza vuole i giorni da oggi (0 = scadute o in scadenza oggi)")
+            v = "<=" + (datetime.date.today() + datetime.timedelta(days=int(v))).isoformat()
+        elif a == "--testo":
+            v = "~" + v
+        q[FILTERS[a]] = v
+    if len(q) == 1:
+        q["assigned_to_id"] = "me"
+    return q
+
+
+def search(client, query, limit=200):
+    """(tasks, truncated): a filtered query on the server, at most `limit` results."""
+    found = list(client.pages("/issues.json", {**query, "sort": "due_date"}, items="issues", max_items=limit + 1))
+    return [task(i) for i in found[:limit]], len(found) > limit
 
 
 def _day(ts):
