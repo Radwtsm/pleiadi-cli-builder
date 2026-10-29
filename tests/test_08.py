@@ -3,6 +3,7 @@ import io, os, sys, unittest
 from contextlib import redirect_stderr, redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ["PCB_GLYPHS"] = "full"  # the tests compare symbols: the same set in every terminal
 sys.path.insert(0, ROOT)
 from pleiadi_cli_builder import App, Step, run_steps
 from pleiadi_cli_builder.contract import tests as contract_tests

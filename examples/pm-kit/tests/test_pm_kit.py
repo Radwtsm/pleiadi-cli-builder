@@ -4,6 +4,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ["PCB_GLYPHS"] = "full"  # the tests compare symbols: the same set in every terminal
 sys.path[:0] = [HERE, os.path.dirname(os.path.dirname(HERE))]
 from pleiadi_cli_builder import credentials, term
 from pleiadi_cli_builder.contract import tests as contract_tests

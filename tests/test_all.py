@@ -8,6 +8,7 @@ from pleiadi_cli_builder import credentials, webapi
 from pleiadi_cli_builder.intro import SHAPES, Renderer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.environ["PCB_GLYPHS"] = "full"  # the tests compare symbols: the same set in every terminal
 
 
 def plain(fn):
