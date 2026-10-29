@@ -159,6 +159,21 @@ class IssueView(unittest.TestCase):
         self.assertIn(("bozza.png · 121 KB", None), dict((t, i) for t, i, _ in d.sections)["Allegati"])
 
 
+class Indicators(unittest.TestCase):
+    def test_my_indicators(self):
+        mine = lambda i, due, upd, prio, proj: {"id": i, "project": U(proj, f"P{proj}"), "status": {"name": "In corso"},
+                                                "assigned_to": U(7, "Anna"), "due_date": due, "done_ratio": 0,
+                                                "updated_on": D(upd) + "T09:00:00Z", "priority": {"name": prio}}
+        data = {"user": {"id": 7}, "open": [mine(1, D(-2), -1, "Alta", 1), mine(2, D(3), -30, "Normale", 1),
+                                            mine(3, None, -2, "Normale", 2), mine(4, D(10), -1, "Urgente", 2),
+                                            dict(mine(5, D(-1), -1, "Normale", 1), assigned_to=U(8, "Bruno"))]}
+        ind = redmine.my_indicators(data, TODAY)
+        self.assertEqual((ind["aperte"], ind["in_ritardo"], ind["in_scadenza_7g"], ind["ferme_14g"]), (4, 1, 1, 1))
+        self.assertEqual(ind["per_priorita"][0], {"priorità": "Normale", "task": 2})
+        self.assertEqual(ind["per_progetto"], [{"progetto": "P1", "task": 2, "in_ritardo": 1},
+                                               {"progetto": "P2", "task": 2, "in_ritardo": 0}])
+
+
 class Commands(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -277,6 +292,15 @@ class Commands(unittest.TestCase):
         self.assertLess(names.index("VPN"), names.index("Redmine risponde"))
         self.set_config(vpn={"up": ["a"], "down": ["b"], "status": ["c"]})
         self.assertTrue(steps(Screen("t"))[names.index("VPN")].check()[0])
+
+    def test_mie_shows_indicators_and_riepilogo_json(self):
+        code, out, err = quiet(lambda: app.main(["mie"]))
+        flat = " ".join(out.split())
+        self.assertIn("2 aperte", flat)
+        self.assertIn("2 in ritardo", flat)
+        code, out, err = quiet(lambda: app.main(["riepilogo", "--json"]))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["aperte"], 2)
 
     def set_config(self, **kv):
         cfg = os.environ["PM_KIT_CONFIG"]

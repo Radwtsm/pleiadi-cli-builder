@@ -122,9 +122,38 @@ def mie(screen, args):
     if data is None:
         return failed(screen, when, [])
     rows = redmine.my_tasks(data)
+    show_indicators(screen, redmine.my_indicators(data, datetime.date.today()))
     i = screen.table(rows, ["id", "progetto", "titolo", "stato", "scadenza", "fatto"], pick=True)
     screen.info(screen.dim(app.snapshot_note(when)))
     return issue_cmd(screen, [str(rows[i]["id"])]) if i is not None else 0
+
+
+def show_indicators(screen, ind):
+    tone = lambda n, code: screen.c(code, str(n)) if n else str(n)
+    screen.out("    " + "   ".join([screen.bold(f"{ind['aperte']} aperte"),
+                                    tone(ind["in_ritardo"], "31;1") + " in ritardo",
+                                    tone(ind["in_scadenza_7g"], "33") + " in scadenza (7 gg)",
+                                    tone(ind["ferme_14g"], "33") + " ferme (14+ gg)"]))
+    if ind["per_progetto"]:
+        screen.out("    " + screen.dim(" · ".join(f"{p['progetto']} {p['task']}" + (f" ({p['in_ritardo']} in ritardo)"
+                                                                                   if p["in_ritardo"] else "")
+                                              for p in ind["per_progetto"])))
+    if ind["per_priorita"]:
+        screen.out("    " + screen.dim("priorità: " + " · ".join(f"{p['priorità']} {p['task']}" for p in ind["per_priorita"])))
+    screen.out("")
+
+
+@app.command("riepilogo", help="i numeri delle tue task aperte: in ritardo, in scadenza, ferme, per progetto",
+             menu=None, effects=False, json=True)
+def riepilogo(screen, args):
+    data, when = mine(screen)
+    if data is None:
+        return failed(screen, when, {})
+    ind = redmine.my_indicators(data, datetime.date.today())
+    if not screen.data(ind):
+        show_indicators(screen, ind)
+        screen.info(screen.dim(app.snapshot_note(when)))
+    return 0
 
 
 @app.command("task", args="[--progetto ID] [--stato aperte|chiuse|tutte] [--persona me|ID] [--scadenza GIORNI] [--testo PAROLA]",

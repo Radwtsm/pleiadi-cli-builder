@@ -237,3 +237,26 @@ def issue_detail(issue, me, today, statuses=None):
     return Detail(f"#{issue['id']} · {issue.get('subject', '')} · {(issue.get('project') or {}).get('name', '')}",
                   fields, sections, legend={"alarm": "in ritardo o urgente", "warn": "attenzione (vicina, ferma, ti cita)",
                                             "ok": "assegnata a te"})
+
+
+def my_indicators(data, today):
+    """The few numbers everyone wants above their own open tasks: how many, late, due within 7 days, still for
+    more than 14 days, by priority and by project."""
+    me = (data.get("user") or {}).get("id")
+    mine = [i for i in data.get("open", []) if (i.get("assigned_to") or {}).get("id") == me]
+    week = (today + datetime.timedelta(days=7)).isoformat()
+    still = (today - datetime.timedelta(days=14)).isoformat()
+    count = lambda key: sorted(({k: sum(key(i) == k for i in mine)} for k in {key(i) for i in mine}),
+                               key=lambda d: (-list(d.values())[0], list(d)[0]))
+    by_prio = [{"priorità": k, "task": n} for d in count(lambda i: (i.get("priority") or {}).get("name", "—"))
+               for k, n in d.items()]
+    projects = {}
+    for i in mine:
+        p = projects.setdefault((i.get("project") or {}).get("name", "—"), {"task": 0, "in_ritardo": 0})
+        p["task"] += 1
+        p["in_ritardo"] += _late(i, today)
+    return {"aperte": len(mine), "in_ritardo": sum(_late(i, today) for i in mine),
+            "in_scadenza_7g": sum(bool(i.get("due_date")) and today.isoformat() <= i["due_date"] <= week for i in mine),
+            "ferme_14g": sum(_day(i.get("updated_on")) < still for i in mine),
+            "per_priorita": by_prio,
+            "per_progetto": [{"progetto": k, **v} for k, v in sorted(projects.items(), key=lambda kv: (-kv[1]["task"], kv[0]))]}
