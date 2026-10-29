@@ -1,0 +1,79 @@
+# pleiadi-cli-builder
+
+Per costruire tool da riga di comando che guidano le persone: setup di un computer nuovo, controlli, flussi
+ripetitivi (operativi, PM), senza perdere tempo in installazioni. Solo libreria standard di Python (3.8+), Mac,
+Linux e Windows: sul computer serve solo Python.
+
+Cosa c'è:
+
+| Pezzo | Modulo | Cosa fa |
+|---|---|---|
+| `App` | `app.py` | nome, colore, comandi con `@app.command`; senza argomenti il menu a frecce; `help` generato; stato per computer in `~/.config/<nome>/state.json` |
+| `Screen` | `term.py` | schermo intero come Claude Code (riquadro fermo in alto, riga di stato ferma in basso, contenuto che scorre, si ridisegna quando la finestra cambia misura); domande a frecce, testo, sì/no; righe semplici fuori da un terminale vero |
+| `screen.wait()` / `progress()` | `term.py` | rotellina, luce che scorre sul testo, barra con percentuale e tempo che manca, ultima riga del programma che lavora |
+| `run` / `run_live` | `proc.py` | lancia programmi: catturati, interattivi (lo schermo si sospende) o dal vivo nella riga di stato |
+| `Step` / `run_steps` | `steps.py` | passi che si possono rilanciare: ognuno controlla prima e salta il fatto; ✗ con cosa fare e «Riprova adesso»; con `check_only` è un `doctor` |
+| `Scene` / `play` | `intro.py` | l'intro animata: volo fra le stelle, costellazione, due forme 3D che ruotano e si trasformano, titolo in pixel |
+| `bundle` / `install_launcher` / `self_update` | `install.py` | un file unico `.pyz` con dentro la libreria, il comando in `~/.local/bin`, l'aggiornamento che sostituisce il file solo se è valido e il suo sha256 corrisponde |
+
+## Prova
+
+```bash
+python3 -m pleiadi_cli_builder demo
+```
+
+```bash
+python3 -m pleiadi_cli_builder intro "MIO TOOL" --resta
+```
+
+## Un tool nuovo
+
+```bash
+python3 -m pleiadi_cli_builder new deploy-kit
+```
+
+Crea `deploy-kit/deploy_kit/__main__.py` con `setup` (prepara tutto, si rilancia) e `doctor` (solo controlli).
+Mentre lo sviluppi: `PYTHONPATH=<questa cartella> python3 -m deploy_kit`. Per distribuirlo:
+
+```bash
+python3 -m pleiadi_cli_builder bundle deploy-kit deploy_kit.__main__:main dist/deploy-kit.pyz
+```
+
+`dist/deploy-kit.pyz` gira con `python3 deploy-kit.pyz`; accanto c'è `deploy-kit.pyz.sha256` da pubblicare
+insieme, così `self_update(url, dest, sha256_url=url + ".sha256")` aggiorna solo con il file giusto.
+
+```python
+import shutil
+
+from pleiadi_cli_builder import App, Step, run_steps
+
+app = App("deploy-kit", title="Deploy kit", accent="#4a6cf7", lang="it")
+
+@app.command("doctor", help="solo i controlli", menu="Controlla che sia tutto a posto")
+def doctor(screen, args):
+    screen.header("controlli")
+    return 0 if run_steps(screen, [Step("git", lambda: shutil.which("git") is not None,
+                                        fix="Installa git: https://git-scm.com")], check_only=True) else 1
+
+app.run()
+```
+
+## Regole del design
+
+- Le funzioni non stampano: restituiscono valori e `Result`; stampa solo lo `Screen`. Così la stessa logica
+  si può usare da un'altra interfaccia (una finestra, i test).
+- Ogni passo si può rilanciare: prima controlla, poi fa. Un setup interrotto riparte da dove si era fermato.
+- Ogni ✗ dice cosa fare, con il nome esatto di pulsanti e menu.
+- Fuori da un terminale vero (script, CI, Claude) tutto diventa righe semplici e le domande prendono la scelta
+  consigliata; `<NOME>_PLAIN=1` o `NO_COLOR` fanno lo stesso a mano.
+- Niente dipendenze: un computer appena acceso deve poter lanciare il tool.
+
+Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i mezzi blocchi (più leggero).
+
+## Test
+
+```bash
+python3 tests/test_all.py
+```
+
+Licenza MIT.

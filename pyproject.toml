@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pleiadi-cli-builder"
+version = "0.1.0"
+description = "Guided command-line tools: full-screen layout, arrow-key menus, live progress, rerunnable steps, doctor, one-file bundle, animated intro. Standard library only."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = []
+
+[project.scripts]
+pleiadi-cli-builder = "pleiadi_cli_builder.__main__:app.run"
+
+[tool.setuptools]
+packages = ["pleiadi_cli_builder"]

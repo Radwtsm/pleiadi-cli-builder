@@ -1,0 +1,521 @@
+"""The terminal: colors, keys, a full-screen layout (fixed header, scrolling body, fixed footer) and the
+questions (arrow-key menus, text, yes/no). Plain line output when there is no real terminal.
+
+Functions in a tool should not print: they return values and the Screen prints, so the same logic can be
+reused by another interface (a window app, a test)."""
+import os, re, shutil, sys, textwrap, threading, time
+
+WIN, MAC = os.name == "nt", sys.platform == "darwin"
+
+TEXTS = {
+    "it": {"hint": "↑↓ scegli · Invio conferma · Ctrl+C esci", "hint_resume": "riprende da dove eri",
+           "recommended": "(consigliata)", "type_number": "Scrivi il numero e premi Invio:", "yes": "Sì", "no": "No",
+           "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
+           "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
+           "minutes": "min", "timeout": "tempo scaduto"},
+    "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
+           "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
+           "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
+           "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
+           "minutes": "min", "timeout": "timed out"},
+}
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
+
+
+class Theme:
+    """Colors as SGR codes (e.g. "38;5;153" or "38;2;232;37;63"), the spinner frames and the glyphs."""
+    def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1",
+                 spinner="✦✧⋆·⋆✧", mark="✦", step="⏺", attach="⎿", arrow="→", prompt="❯"):
+        self.accent, self.ok, self.error, self.dim, self.bold = accent, ok, error, dim, bold
+        self.spinner, self.mark, self.step, self.attach, self.arrow, self.prompt = spinner, mark, step, attach, arrow, prompt
+
+    @staticmethod
+    def rgb(hex_color):
+        """"#e8253f" → "38;2;232;37;63" (truecolor foreground)."""
+        h = hex_color.lstrip("#")
+        return "38;2;" + ";".join(str(int(h[i:i + 2], 16)) for i in (0, 2, 4))
+
+
+def visible_len(s):
+    return len(ANSI.sub("", s))
+
+
+def clip(s, width):
+    """A colored line cut to `width` visible columns (color codes don't count), never wrapping."""
+    out, n, i = [], 0, 0
+    while i < len(s):
+        m = ANSI.match(s, i)
+        if m:
+            out.append(m.group(0))
+            i = m.end()
+            continue
+        if n >= width - 1 and i < len(s) - 1:
+            out.append("…")
+            break
+        out.append(s[i])
+        n += 1
+        i += 1
+    return "".join(out) + ("\x1b[0m" if "\x1b[" in s else "")
+
+
+def key():
+    """One key without Enter: "up", "down", "enter", "backspace" or the character. Ctrl+C raises as usual."""
+    if WIN:
+        import msvcrt
+        k = msvcrt.getwch()
+        if k in ("\x00", "\xe0"):
+            return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
+    else:
+        import termios, tty
+        fd = sys.stdin.fileno()
+        before = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            b = os.read(fd, 1)
+            if b == b"\x1b":
+                b += os.read(fd, 2)
+            elif b and b[0] >= 0xC0:  # an accented letter is several bytes (UTF-8)
+                b += os.read(fd, 1 if b[0] < 0xE0 else 2 if b[0] < 0xF0 else 3)
+            k = b.decode(errors="ignore")
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, before)
+        k = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down"}.get(k, k)
+    if k == "\x03":
+        raise KeyboardInterrupt
+    if k in ("\x7f", "\x08"):
+        return "backspace"
+    return "enter" if k in ("\r", "\n") else k
+
+
+SCREENS = []  # the open full screen (one): run(interactive=True) suspends it for programs that talk by themselves
+LIVE = []  # the open status line (Screen.wait): long functions report progress into it without printing
+
+
+def progress(fraction=None, detail=None):
+    """Report progress from inside any function: goes to the open spinner line, if there is one."""
+    if LIVE:
+        LIVE[-1].advance(fraction, detail)
+
+
+class Screen:
+    """Full screen like Claude Code: the header box stays at the top, the status line at the bottom, the content
+    scrolls in between; redraws itself when the window is resized. `<NAME>_PLAIN=1`, `NO_COLOR` or no real
+    terminal = plain lines."""
+
+    def __init__(self, name="tool", title="", theme=None, lang="it", plain_env=None):
+        self.name, self.title, self.theme = name, title or name, theme or Theme()
+        self.t = TEXTS.get(lang, TEXTS["en"])
+        self.colors = sys.stdout.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+        for s in (sys.stdout, sys.stderr):
+            try:
+                s.reconfigure(encoding="utf-8")
+            except (AttributeError, ValueError):
+                pass
+        if WIN and self.colors:  # ANSI colors in the Windows console (VT mode)
+            try:
+                import ctypes
+                k = ctypes.windll.kernel32
+                h, m = k.GetStdHandle(-11), ctypes.c_uint32()
+                if not (k.GetConsoleMode(h, ctypes.byref(m)) and k.SetConsoleMode(h, m.value | 4)):
+                    self.colors = False
+            except (OSError, AttributeError):
+                self.colors = False
+        plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
+        self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
+        self.results, self.no_input = [], False
+        self.head, self.body, self.foot, self.last = [], [], "", []
+        self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
+
+    # ── the screen ──
+    def open(self):
+        if not self.full or self.opened:
+            return
+        self.opened = True
+        sys.stdout.write("\033[?1049h\033[?25l")
+        SCREENS.append(self)
+        import atexit
+        atexit.register(self.close)  # any exit gives the normal terminal back
+        if not WIN:
+            try:
+                import signal
+                signal.signal(signal.SIGWINCH, lambda *_: self.draw())
+            except (ValueError, OSError, AttributeError):
+                pass
+
+        def watch():  # Windows too (no SIGWINCH): check the size 5 times a second
+            while self.opened:
+                if shutil.get_terminal_size((80, 24)) != self.size:
+                    self.draw()
+                time.sleep(0.2)
+        threading.Thread(target=watch, daemon=True).start()
+        self.draw()
+
+    def close(self):
+        """Back to the normal screen, leaving the summary there (or the whole log if there is none)."""
+        if not self.opened:
+            return
+        self.opened = False
+        if self in SCREENS:
+            SCREENS.remove(self)
+        sys.stdout.write("\033[?25h\033[?1049l")
+        keep = [r for r in (self.last or "\n".join(self.body).strip("\n").split("\n")) if r]
+        sys.stdout.write("\n".join(keep) + ("\n" if keep else ""))
+        sys.stdout.flush()
+
+    def suspend(self):
+        """For a program that talks to the person by itself (a login, an installer): normal screen."""
+        if self.opened:
+            sys.stdout.write("\033[?25h\033[?1049l")
+            sys.stdout.flush()
+
+    def resume(self):
+        if self.opened:
+            sys.stdout.write("\033[?1049h\033[?25l")
+            self.size = None
+            self.draw()
+
+    def out(self, line=""):
+        if not self.full:
+            print(line)
+            return
+        self.open()
+        with self.lock:
+            self.body += line.split("\n")
+            del self.body[:-500]
+        self.draw()
+
+    def draw(self):
+        if not self.opened:
+            return
+        with self.lock:
+            self.size = shutil.get_terminal_size((80, 24))
+            w, h = self.size.columns, self.size.lines
+            head = [clip(r, w) for r in self.head] if h >= len(self.head) + 8 else []
+            foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or self.c(self.theme.dim, "  " + self.t["hint"]), w)]
+            room = max(1, h - len(head) - len(foot))
+            body = [clip(r, w) for r in self.body[-room:]]
+            body += [""] * (room - len(body))
+            lines = head + body + foot
+            sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in lines[:h]) + "\033[J")
+            sys.stdout.flush()
+
+    def clear(self):
+        if self.full:
+            with self.lock:
+                self.body = []
+            self.draw()
+        elif self.colors:
+            sys.stdout.write("\033[2J\033[3J\033[H")
+            sys.stdout.flush()
+
+    # ── colors ──
+    def c(self, code, text):
+        return f"\033[{code}m{text}\033[0m" if self.colors else text
+
+    def acc(self, text):
+        return self.c(self.theme.accent, text)
+
+    def dim(self, text):
+        return self.c(self.theme.dim, text)
+
+    def bold(self, text):
+        return self.c(self.theme.bold, text)
+
+    def text_width(self):
+        return max(40, min(shutil.get_terminal_size((80, 24)).columns - 1, 100))
+
+    # ── blocks ──
+    def header(self, subtitle=""):
+        """The opening box, like Claude Code's: fixed at the top for the whole session."""
+        lines = [self.acc(self.theme.mark + " ") + self.bold(self.title) + self.dim(f"  {self.name}")]
+        if subtitle:
+            lines.append("  " + subtitle)
+        if self.full:
+            self.head = self.frame(lines)
+            self.open()
+            self.draw()
+        else:
+            self.box(lines + [self.dim(f"  {self.t['hint']} ({self.t['hint_resume']})")])
+
+    def frame(self, lines):
+        vis = [visible_len(r) for r in lines]
+        w = self.width = max(max(vis) + 2, self.width)  # all boxes equally wide
+        d = self.theme.dim
+        return ([self.c(d, "╭" + "─" * w + "╮")]
+                + [self.c(d, "│") + " " + r + " " * (w - n - 1) + self.c(d, "│") for r, n in zip(lines, vis)]
+                + [self.c(d, "╰" + "─" * w + "╯")])
+
+    def box(self, lines):
+        self.out("")
+        for r in self.frame(lines):
+            self.out(r)
+
+    def section(self, text):
+        self.out("")
+        self.out(self.acc(self.theme.mark) + " " + self.bold(text))
+        self.attached = True
+
+    def step(self, n, total, text, why=""):
+        """⏺ Step  n/total · why — the results attach below with ⎿ (like Claude Code's actions)."""
+        self.out("")
+        self.out(self.acc(self.theme.step) + " " + self.bold(text) + self.dim(f"  {n}/{total}" + (f" · {why}" if why else "")))
+        self.attached = True
+
+    def _indent(self):
+        r = f"  {self.theme.attach} " if self.attached else "    "
+        self.attached = False
+        return self.dim(r)
+
+    def info(self, text):
+        if "\033" in text:  # already colored: no wrapping computed on the codes
+            self.out("    " + text)
+            return
+        self.out(textwrap.fill(text, self.text_width(), initial_indent="    ", subsequent_indent="    ",
+                               break_on_hyphens=False, break_long_words=False))
+
+    def todo(self, text):
+        """What the person has to do, with the exact names of buttons and menus."""
+        for r in text.split("\n"):
+            lines = textwrap.wrap(r, self.text_width() - 6, break_on_hyphens=False, break_long_words=False) or [""]
+            self.out("    " + self.acc(self.theme.arrow) + " " + lines[0])
+            for x in lines[1:]:
+                self.out("      " + x)
+
+    def link(self, label, url):
+        self.out("    " + self.dim(f"{label:<26}") + " " + (self.c("4", url) if url.startswith("http") else url))
+
+    def result(self, r):
+        """Show a Result (✓ / ✗ with what to do) and, if it has `retry`, offer to retry on the spot (max 3)."""
+        self.results.append(r)
+        th = self.theme
+        if r.skipped:
+            self.out(self._indent() + self.dim(f"✓ {r.name}" + (f" · {r.note}" if r.note else "")))
+        elif r.ok:
+            self.out(self._indent() + self.c(th.ok, "✓") + f" {r.name}" + (self.dim(f" · {r.note}") if r.note else ""))
+        else:
+            self.out(self._indent() + self.c(th.error, "✗") + f" {r.name}")
+            if r.fix:
+                self.todo(r.fix)
+            tries = 0  # never forever: at most 3, and none if nobody answers
+            while (r.retry and sys.stdin.isatty() and not self.no_input and tries < 3
+                   and self.confirm(self.t["done_q"], self.t["retry"], self.t["skip"])):
+                tries += 1
+                try:
+                    r.ok = bool(r.retry())
+                except Exception as x:  # an error while retrying doesn't stop the run
+                    self.todo(f"{self.t['not_yet']}: {x}")
+                if r.ok:
+                    self.out("    " + self.c(th.ok, "✓") + f" {r.name}")
+                    break
+                self.out("    " + self.c(th.error, "✗") + f" {r.name} · {self.t['not_yet']}")
+        return r.ok
+
+    def summary(self, minutes=None):
+        """The closing box: n/total ok and what is still ✗; it stays on screen after exit."""
+        good = [r for r in self.results if r.ok or r.skipped]
+        everything = len(good) == len(self.results)
+        th = self.theme
+        lines = [(self.c(th.ok, "✓ ") if everything else self.acc(th.mark + " "))
+                 + self.bold(self.t["ok_count"].format(ok=len(good), tot=len(self.results)))
+                 + (self.dim(f" · {minutes} {self.t['minutes']}") if minutes is not None else "")]
+        lines += ["  " + self.c(th.error, "✗") + f" {r.name}" for r in self.results if not (r.ok or r.skipped)]
+        if not everything:
+            lines.append(self.dim("  " + self.t["rerun"].format(name=self.name)))
+        self.box(lines)
+        self.last = self.frame(lines)
+        return everything
+
+    # ── questions ──
+    def ask(self, question, default=""):
+        if self.full:
+            return self._type(question, default)
+        try:
+            r = input("\n  " + self.acc("?") + " " + self.bold(question) + self.dim(f" [{default}]" if default else "")
+                      + "\n  " + self.acc(self.theme.prompt) + " ").strip()
+        except EOFError:  # nobody answers (run by a script or by Claude): go on with the default
+            self.no_input, r = True, ""
+        return r or default
+
+    def choose(self, question, options):
+        """options = [text]; the first is the recommended one. Returns the index. Arrows + Enter (or the number);
+        without a real terminal: type the number."""
+        self.out("")
+        self.out("  " + self.acc("?") + " " + self.bold(question))
+        if self.colors and sys.stdin.isatty():
+            try:
+                return self._menu(options)
+            except (OSError, ImportError):
+                pass  # no single keys (odd console): fall back to the number
+        for i, o in enumerate(options, 1):
+            self.out(f"    {i}. {o}" + (self.dim("  " + self.t["recommended"]) if i == 1 else ""))
+        while True:
+            r = self.ask(self.t["type_number"], "1")
+            if r.isdigit() and 1 <= int(r) <= len(options):
+                return int(r) - 1
+
+    def confirm(self, question, yes=None, no=None):
+        return self.choose(question, [yes or self.t["yes"], no or self.t["no"]]) == 0
+
+    def _menu(self, options):
+        rec = "  " + self.t["recommended"]
+
+        def row(i, o):
+            w = self.text_width() - 8
+            o = o if len(o) <= w else o[:w - 1] + "…"  # one line per option, even on a narrow screen
+            note = self.dim(rec) if i == 0 and len(o) + len(rec) + 1 <= w else ""
+            return (self.acc(f"  {self.theme.prompt} {i + 1}. {o}") if i == sel else f"    {i + 1}. {o}") + note
+        sel, n = 0, len(options)
+
+        def move(k):
+            return ((sel - 1) % n if k == "up" else (sel + 1) % n if k == "down" else
+                    int(k) - 1 if k.isdigit() and 1 <= int(k) <= n else sel)
+        if self.full:  # the options stay in place; afterwards one line with the answer
+            with self.lock:
+                start = len(self.body)
+                self.body += [row(i, o) for i, o in enumerate(options)]
+            self.draw()
+            while True:
+                k = key()
+                if k == "enter":
+                    break
+                sel = move(k)
+                with self.lock:
+                    self.body[start:start + n] = [row(i, o) for i, o in enumerate(options)]
+                self.draw()
+            with self.lock:
+                self.body[start:] = ["    " + self.acc(self.theme.prompt + " ") + options[sel]]
+            self.draw()
+            return sel
+        sys.stdout.write("\033[?25l")
+        try:
+            for i, o in enumerate(options):
+                print(row(i, o))
+            print(self.dim("    " + self.t["hint"]))
+            while True:
+                k = key()
+                if k == "enter":
+                    return sel
+                new = move(k)
+                if new == sel:
+                    continue
+                sel = new
+                sys.stdout.write(f"\033[{n + 1}F")  # back up and rewrite the options
+                for i, o in enumerate(options):
+                    sys.stdout.write("\033[2K" + row(i, o) + "\n")
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+        finally:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+
+    def _type(self, question, default):
+        """A typed answer in full screen: typed into the fixed status line at the bottom."""
+        self.out("")
+        self.out("  " + self.acc("?") + " " + self.bold(question) + self.dim(f" [{default}]" if default else ""))
+        text = ""
+        sys.stdout.write("\033[?25h")
+        try:
+            while True:
+                self.foot = "  " + self.acc(self.theme.prompt + " ") + text
+                self.draw()
+                k = key()
+                if k == "enter":
+                    break
+                if k == "backspace":
+                    text = text[:-1]
+                elif len(k) == 1 and k.isprintable():
+                    text += k
+        finally:
+            self.foot = ""
+            sys.stdout.write("\033[?25l")
+        self.out("    " + self.acc(self.theme.prompt + " ") + (text.strip() or self.dim(default or "—")))
+        return text.strip() or default
+
+    def wait(self, text):
+        """`with screen.wait("downloading") as w: w.advance(0.4, "12/30 files")` — spinner, shimmer, progress
+        bar with ETA, the last line of the running program and the elapsed time."""
+        return Wait(self, text)
+
+
+class Wait:
+    """The live status line while a long step works (only in a real terminal)."""
+    def __init__(self, screen, text):
+        self.s, self.text, self.stop = screen, text, threading.Event()
+        self.fraction, self.detail, self.start, self.k, self.thread = None, "", time.time(), -1, None
+
+    def advance(self, fraction=None, detail=None):
+        if fraction is not None:
+            self.fraction = max(0.0, min(1.0, fraction))
+        if detail is not None:
+            self.detail = " ".join(str(detail).split())
+
+    def shimmer(self, text):
+        """A light that runs over the text, like when Claude Code is thinking."""
+        if not self.s.colors:
+            return text
+        self.k += 1
+        pos = self.k % (len(text) + 12) - 3
+        return "".join(self.s.bold(x) if abs(i - pos) <= 1 else self.s.dim(x) if abs(i - pos) > 4 else x
+                       for i, x in enumerate(text))
+
+    def line(self, frame):
+        """Always inside the window width (a wrapping line smears the screen on every frame): first the detail
+        gets shorter, then the bar, then the text."""
+        s, sec = self.s, int(time.time() - self.start)
+        elapsed = f"{sec // 60}:{sec % 60:02d}" if sec >= 60 else f"{sec} s"
+        if self.fraction is not None and 0.03 < self.fraction < 1 and sec >= 5:  # what's left, from the pace so far
+            left = int(sec * (1 - self.fraction) / self.fraction)
+            elapsed += f" · ~{left // 60} min" if left >= 90 else f" · ~{left} s"
+        w = shutil.get_terminal_size((80, 24)).columns - 1
+        lb = 20 if self.fraction is not None else 0
+        text = self.text
+        free = w - 6 - len(text) - (lb + 7 if lb else 0) - len(elapsed) - 2
+        if free < 0 and lb:
+            lb = max(6, lb + free)
+            free = w - 6 - len(text) - lb - 7 - len(elapsed) - 2
+        if free < 0:
+            text = text[:max(8, len(text) + free - 1)] + "…"
+            free = 0
+        det = self.detail if len(self.detail) + 2 <= free else ""
+        bar = ""
+        if lb:
+            n = round(self.fraction * lb)
+            bar = "  " + s.acc("━" * n) + s.dim("─" * (lb - n)) + f" {round(self.fraction * 100):3d}%"
+        return "    " + s.acc(frame) + " " + self.shimmer(text) + bar + s.dim(("  " + det if det else "") + f"  {elapsed}")
+
+    def __enter__(self):
+        LIVE.append(self)
+        s = self.s
+        if s.full:
+            s.open()
+        elif not s.colors:
+            print("    … " + self.text)
+            return self
+
+        def spin():
+            i = 0
+            while not self.stop.wait(0.12):
+                ln = self.line(s.theme.spinner[i % len(s.theme.spinner)])
+                if s.full:
+                    s.foot = ln
+                    s.draw()
+                else:
+                    sys.stdout.write("\r" + ln + "\033[K")
+                    sys.stdout.flush()
+                i += 1
+        self.thread = threading.Thread(target=spin, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        if self in LIVE:
+            LIVE.remove(self)
+        if self.thread:
+            self.thread.join()
+            if self.s.full:
+                self.s.foot = ""
+                self.s.draw()
+            else:
+                sys.stdout.write("\r\033[K")
