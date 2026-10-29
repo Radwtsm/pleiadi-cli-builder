@@ -11,3 +11,5 @@ percorsi privati, mai codice o dati di chi la usa (un tool aziendale vive nel re
   pre-commit (`git config core.hooksPath .githooks`, con gitleaks).
 - Release: `python3 tools/release.py` → `dist/pleiadi-cli-builder.pyz` + `.sha256`, poi tag `vX.Y.Z` e
   `gh release create` con i due file (il README rimanda a `releases/latest`).
+- Output pensato anche per Claude (che legge ogni riga a token): righe brevi, ✓/✗ con cosa fare, un riepilogo;
+  i dati con `--json`. Mai log interi a schermo: l'ultima riga utile, il resto in un file.
