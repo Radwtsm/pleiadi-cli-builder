@@ -119,10 +119,48 @@ def project_status(identifier, projects, open_issues, today, horizon=14):
     }
 
 
-def my_tasks(data):
+def my_tasks(data, seen=None):
+    """My open tasks, soonest due first; with `seen` (seen_entries of my last look) a «novità» column: ● = changed
+    or new since then."""
     me = (data.get("user") or {}).get("id")
     mine = [i for i in data.get("open", []) if (i.get("assigned_to") or {}).get("id") == me]
-    return [task(i) for i in sorted(mine, key=lambda i: (i.get("due_date") or "9999", i["id"]))]
+    changed = {c["id"] for c in changes(seen, mine)}
+    return [{"novità": "●" if i["id"] in changed else "", **task(i)}
+            for i in sorted(mine, key=lambda i: (i.get("due_date") or "9999", i["id"]))]
+
+
+# ── what changed since I last looked ──
+WATCHED = (("stato", lambda i: (i.get("status") or {}).get("name", "")),
+           ("scadenza", lambda i: i.get("due_date") or ""),
+           ("fatto", lambda i: f"{i.get('done_ratio') or 0}%"),
+           ("priorità", lambda i: (i.get("priority") or {}).get("name", "")),
+           ("assegnata", lambda i: (i.get("assigned_to") or {}).get("name", "—")))
+
+
+def seen_entries(issues):
+    """{id: what I saw}: the update time and the few fields whose change is worth saying (no titles, no text)."""
+    return {str(i["id"]): {"aggiornata": i.get("updated_on") or "", **{k: get(i) for k, get in WATCHED}}
+            for i in issues}
+
+
+def field_changes(seen, issue):
+    return [f"{k}: {seen[k] or '—'} → {get(issue) or '—'}" for k, get in WATCHED
+            if k in seen and seen[k] != get(issue) and not (k == "priorità" and not get(issue))]
+
+
+def changes(seen, issues):
+    """The tasks changed or new since `seen`; None (never looked) = nothing: that look is the baseline."""
+    if seen is None:
+        return []
+    out = []
+    for i in issues:
+        was = seen.get(str(i["id"]))
+        if was is not None and was.get("aggiornata") == (i.get("updated_on") or ""):
+            continue
+        what = "nuova per te" if was is None else "; ".join(field_changes(was, i)) or "aggiornata (note o altri campi)"
+        out.append({"id": i["id"], "progetto": (i.get("project") or {}).get("name", ""), "titolo": i.get("subject", ""),
+                    "cosa": what, "aggiornata": _day(i.get("updated_on"))})
+    return sorted(out, key=lambda c: (c["aggiornata"], c["id"]), reverse=True)
 
 
 # ── one issue in detail ──
@@ -181,9 +219,28 @@ def _size(n):
     return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{round(n / 1024)} KB"
 
 
-def issue_detail(issue, me, today, statuses=None):
+def _journal(j, statuses, names):
+    """One note or change as lines [(text, tone)]: the text (warn when it mentions me), then the changed fields."""
+    items = [(t, "warn" if any(n.lower() in (j.get("notes") or "").lower() for n in names) else tone)
+             for t, tone in readable(j.get("notes"))]
+    for d in j.get("details") or []:
+        old, new = d.get("old_value"), d.get("new_value")
+        if d.get("name") == "status_id":
+            name = lambda v: statuses.get(int(v), v) if v and str(v).isdigit() else v
+            items.append((f"stato: {name(old)} → {name(new)}", None))
+        elif d.get("name") == "done_ratio":
+            items.append((f"fatto: {old or 0}% → {new or 0}%", None))
+        elif d.get("name") == "assigned_to_id":
+            items.append(("assegnatario cambiato", None))
+        else:
+            items.append((f"{d.get('name')}: {old or '—'} → {new or '—'}", "dim"))
+    return items
+
+
+def issue_detail(issue, me, today, statuses=None, seen=None):
     """A Detail for one issue: key fields with meaning colors (late, urgent, mine, still, mentions me), the
-    description, notes and changes most recent first (older ones folded), relations and sub-tasks, attachments."""
+    description, notes and changes most recent first (older ones folded), relations and sub-tasks, attachments.
+    seen = what I saw last time (seen_entries): if it changed since, «Cosa è cambiato» comes first."""
     from pleiadi_cli_builder import Detail
     statuses, me = statuses or {}, me or {}
     is_open = not (issue.get("status") or {}).get("is_closed", False)
@@ -207,21 +264,16 @@ def issue_detail(issue, me, today, statuses=None):
     if me.get("firstname"):
         names.append(f"{me['firstname']} {me.get('lastname', '')}".strip())
     sections = [("Descrizione", readable(issue.get("description")) or [("—", "dim")])]
+    if seen and seen.get("aggiornata") != (issue.get("updated_on") or ""):
+        news = [(t, None) for t in field_changes(seen, issue)]
+        for j in reversed(issue.get("journals") or []):
+            if (j.get("created_on") or "") > seen.get("aggiornata", ""):
+                news += [(f"{_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", "dim")]
+                news += [("  " + t, tone) for t, tone in _journal(j, statuses, names)]
+        sections.insert(0, ("Cosa è cambiato", news or [("aggiornata (campi non mostrati qui)", "dim")]))
     shown = 0
     for j in reversed(issue.get("journals") or []):
-        items = [(t, "warn" if any(n.lower() in (j.get("notes") or "").lower() for n in names) else tone)
-                 for t, tone in readable(j.get("notes"))]
-        for d in j.get("details") or []:
-            old, new = d.get("old_value"), d.get("new_value")
-            if d.get("name") == "status_id":
-                name = lambda v: statuses.get(int(v), v) if v and str(v).isdigit() else v
-                items.append((f"stato: {name(old)} → {name(new)}", None))
-            elif d.get("name") == "done_ratio":
-                items.append((f"fatto: {old or 0}% → {new or 0}%", None))
-            elif d.get("name") == "assigned_to_id":
-                items.append(("assegnatario cambiato", None))
-            else:
-                items.append((f"{d.get('name')}: {old or '—'} → {new or '—'}", "dim"))
+        items = _journal(j, statuses, names)
         if items:
             sections.append((f"Nota · {_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", items, shown >= 3))
             shown += 1

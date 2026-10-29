@@ -72,6 +72,8 @@ class FakeRedmine(http.server.BaseHTTPRequestHandler):
             if "journals" not in q.get("include", ""):
                 return self.send(400)
             d = json.loads(json.dumps(DETAIL))
+            if ISSUES[0]["updated_on"] > d["issue"]["updated_on"]:  # the same task as in the list
+                d["issue"].update({k: ISSUES[0][k] for k in ("status", "updated_on", "due_date", "done_ratio")})
             for a in d["issue"]["attachments"]:  # Redmine gives absolute links to its own host
                 a["content_url"] = f"http://{self.headers['Host']}/attachments/download/1/{a['filename']}"
             return self.send(200, d)
@@ -167,6 +169,48 @@ class IssueView(unittest.TestCase):
         self.assertIn(("stato: Nuova → In corso", None), notes[1][1])
         self.assertIn("Relazioni e sotto-task", titles)
         self.assertIn(("bozza.png · 121 KB", None), dict((t, i) for t, i, _ in d.sections)["Allegati"])
+
+
+class News(unittest.TestCase):
+    """What changed on my tasks since I last looked: ● in the list, the `novita` command, «Cosa è cambiato»."""
+    def mine(self):
+        return [dict(i) for i in ISSUES if i.get("assigned_to", {}).get("id") == 7 and not i["status"]["is_closed"]]
+
+    def test_first_look_is_the_baseline(self):
+        self.assertEqual(redmine.changes(None, self.mine()), [])
+
+    def test_changed_and_new_tasks(self):
+        issues = self.mine()
+        seen = redmine.seen_entries(issues)
+        issues[0] = dict(issues[0], status={"name": "Risolta", "is_closed": False}, due_date=D(4),
+                         updated_on=D(0) + "T08:00:00Z")
+        issues.append(dict(ISSUES[1], id=106, assigned_to=U(7, "Anna Prova"), subject="Nuova pagina"))
+        got = {c["id"]: c for c in redmine.changes(seen, issues)}
+        self.assertEqual(sorted(got), [101, 106])
+        self.assertIn("stato: In corso → Risolta", got[101]["cosa"])
+        self.assertIn(f"scadenza: {D(-3)} → {D(4)}", got[101]["cosa"])
+        self.assertEqual(got[106]["cosa"], "nuova per te")
+        rows = redmine.my_tasks({"user": {"id": 7}, "open": issues}, seen)
+        self.assertEqual({r["id"]: r["novità"] for r in rows}, {101: "●", 103: "", 106: "●"})
+
+    def test_only_a_note_still_counts(self):
+        issues = self.mine()
+        seen = redmine.seen_entries(issues)
+        issues[1] = dict(issues[1], updated_on=D(0) + "T08:00:00Z")
+        self.assertEqual(redmine.changes(seen, issues)[0]["cosa"], "aggiornata (note o altri campi)")
+
+    def test_what_changed_section_first(self):
+        issue = DETAIL["issue"]
+        seen = dict(redmine.seen_entries([issue])[str(issue["id"])], aggiornata=D(-25) + "T09:00:00Z", stato="Nuova")
+        d = redmine.issue_detail(issue, {"id": 7, "login": "anna"}, TODAY, {1: "Nuova", 2: "In corso"}, seen=seen)
+        title, items, folded = d.sections[0]
+        self.assertEqual(title, "Cosa è cambiato")
+        self.assertFalse(folded)
+        text = [t for t, _ in items]
+        self.assertIn("stato: Nuova → In corso", text)
+        self.assertTrue(any("@anna puoi guardare il menu?" in t for t in text))  # the note after my last look
+        plain = redmine.issue_detail(issue, {"id": 7}, TODAY, {}, seen=redmine.seen_entries([issue])[str(issue["id"])])
+        self.assertNotEqual(plain.sections[0][0], "Cosa è cambiato")  # nothing new: no section
 
 
 class Indicators(unittest.TestCase):
@@ -266,6 +310,41 @@ class Commands(unittest.TestCase):
         code, out, err = quiet(lambda: app.main(["progetti", "--tutti", "--aggiorna"]))
         self.assertIn("al massimo ogni", " ".join(out.split()))
         self.assertEqual(FakeRedmine.paths, [])
+
+    def test_news_dot_command_and_seen(self):
+        code, out, err = quiet(lambda: app.main(["mie", "--json"]))  # first look: the baseline, no ●
+        self.assertEqual([t["novità"] for t in json.loads(out)], ["", ""])
+        old = ISSUES[0]
+        ISSUES[0] = dict(old, status={"name": "Risolta", "is_closed": False}, updated_on=D(0) + "T08:00:00Z")
+        try:
+            app._memory.clear()  # the server changed: read it again (a refresh this close would use the copy)
+            code, out, err = quiet(lambda: app.main(["mie", "--json"]))
+            self.assertEqual({t["id"]: t["novità"] for t in json.loads(out)}, {101: "●", 103: ""})
+            code, out, err = quiet(lambda: app.main(["novita", "--json"]))
+            self.assertEqual(code, 0, err)
+            news = json.loads(out)
+            self.assertEqual([n["id"] for n in news], [101])
+            self.assertIn("stato: In corso → Risolta", news[0]["cosa"])
+            code, out, err = quiet(lambda: app.main(["issue", "101"]))  # opened = seen
+            self.assertIn("Cosa è cambiato", out)
+            code, out, err = quiet(lambda: app.main(["novita", "--json"]))
+            self.assertEqual(json.loads(out), [])
+        finally:
+            ISSUES[0] = old
+
+    def test_news_all_seen(self):
+        quiet(lambda: app.main(["mie", "--json"]))
+        old = ISSUES[2]
+        ISSUES[2] = dict(old, done_ratio=90, updated_on=D(0) + "T08:00:00Z")
+        try:
+            app._memory.clear()
+            code, out, err = quiet(lambda: app.main(["novita", "--visto"]))
+            self.assertEqual(code, 0, err)
+            self.assertIn("1 task segnate come viste", out)
+            code, out, err = quiet(lambda: app.main(["novita", "--json"]))
+            self.assertEqual(json.loads(out), [])
+        finally:
+            ISSUES[2] = old
 
     def test_issue_command(self):
         code, out, err = quiet(lambda: app.main(["issue", "101", "--json"]))

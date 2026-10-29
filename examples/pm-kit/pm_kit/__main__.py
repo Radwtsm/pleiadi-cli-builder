@@ -10,7 +10,9 @@ Configurazione (dato, JSON): $PM_KIT_CONFIG oppure ~/.config/pm-kit/config.json
      "cartella_download": "~/Downloads/pm-kit",   gli allegati di una task vanno in <cartella>/<numero>/
      "ca_file": "...", oppure "pin_sha256": "...", "pin_expires": "AAAA-MM-GG",   certificato interno
      "vpn": {"up": [...], "down": [...], "status": [...]}}                 la VPN, aperta solo per scaricare
-La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file."""
+La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file.
+Novità: cosa ho visto di ogni mia task (ora di aggiornamento, stato, scadenza, fatto, priorità, assegnatario; niente
+titoli né testi) sta in viste.json accanto alle copie locali: ● nella lista finché non la apro."""
 import datetime, os, shlex, urllib.error
 
 from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, copy_to_clipboard, credentials, pin_step,
@@ -129,6 +131,25 @@ def mine(screen):
     return download(screen, "mie", cfg, fetch, 2)
 
 
+def seen_path():
+    return os.path.join(os.path.dirname(app.cache_dir), "viste.json")
+
+
+def seen():
+    """What I saw of my tasks at my last look ({id: …}), None if never looked."""
+    return read_json(seen_path())
+
+
+def mark_seen(issues, replace=False):
+    """issues looked at now; replace=True: the whole list (the first look, «tutte viste»): what is gone is dropped."""
+    write_json(seen_path(), {**({} if replace else seen() or {}), **redmine.seen_entries(issues)})
+
+
+def my_open(data):
+    me = (data.get("user") or {}).get("id")
+    return [i for i in data.get("open", []) if (i.get("assigned_to") or {}).get("id") == me]
+
+
 def failed(screen, reason, empty):
     """✗ with the reason; with --json the empty value on stdout, so a pipe still gets valid JSON."""
     screen.out(screen.c(screen.theme.error, "✗") + f" {reason}")
@@ -142,9 +163,14 @@ def mie(screen, args):
     data, when = mine(screen)
     if data is None:
         return failed(screen, when, [])
-    rows = redmine.my_tasks(data)
+    was = seen()
+    if was is None:  # the first look is the baseline: from now on ● = changed since
+        mark_seen(my_open(data), replace=True)
+    rows = redmine.my_tasks(data, was)
     show_indicators(screen, redmine.my_indicators(data, datetime.date.today()))
-    i = screen.table(rows, ["id", "progetto", "titolo", "stato", "scadenza", "fatto"], pick=True)
+    if any(r["novità"] for r in rows) and not screen.json:
+        screen.info(f"● = cambiata da quando l'hai vista: `{app.cmd('novita')}` dice cosa")
+    i = screen.table(rows, ["novità", "id", "progetto", "titolo", "stato", "scadenza", "fatto"], {"novità": "●"}, pick=True)
     screen.info(screen.dim(app.snapshot_note(when)))
     return issue_cmd(screen, [str(rows[i]["id"])]) if i is not None else 0
 
@@ -162,6 +188,30 @@ def show_indicators(screen, ind):
     if ind["per_priorita"]:
         screen.out("    " + screen.dim("priorità: " + " · ".join(f"{p['priorità']} {p['task']}" for p in ind["per_priorita"])))
     screen.out("")
+
+
+@app.command("novita", args="[--visto]", help="cosa è cambiato sulle tue task da quando le hai viste (--visto: segnale "
+             "tutte come viste)", menu="Novità sulle mie task", effects=False, json=True, key="n")
+def novita(screen, args):
+    data, when = mine(screen)
+    if data is None:
+        return failed(screen, when, [])
+    issues, was = my_open(data), seen()
+    if was is None or "--visto" in args:
+        mark_seen(issues, replace=True)
+        if was is None:
+            screen.info("prima volta: da adesso segno cosa cambia")
+            screen.data([])
+            return 0
+        screen.info(f"{len(redmine.changes(was, issues))} task segnate come viste")
+        return 0
+    news = redmine.changes(was, issues)
+    if not news and not screen.json:
+        screen.info(f"{screen.theme.yes} niente di nuovo dall'ultima volta")
+        return 0
+    i = screen.table(news, ["id", "progetto", "titolo", "cosa", "aggiornata"], pick=True)
+    screen.info(screen.dim(app.snapshot_note(when)))
+    return issue_cmd(screen, [str(news[i]["id"])]) if i is not None else 0
 
 
 @app.command("riepilogo", help="i numeri delle tue task aperte: in ritardo, in scadenza, ferme, per progetto",
@@ -276,9 +326,12 @@ def issue_cmd(screen, args):
         return failed(screen, f"Task {number} non trovata (o non visibile per te)" if e.status == 404 else why(e), {})
     except ERRORS as e:
         return failed(screen, why(e), {})
-    d = redmine.issue_detail(issue, me, datetime.date.today(), statuses)
+    was = seen()
+    d = redmine.issue_detail(issue, me, datetime.date.today(), statuses, (was or {}).get(str(issue["id"])))
     d.actions = issue_actions(issue)
     screen.detail(d)
+    if was is not None and str(issue["id"]) in was or (issue.get("assigned_to") or {}).get("id") == (me or {}).get("id"):
+        mark_seen([issue])  # opened = seen: its ● goes away
     return 0
 
 

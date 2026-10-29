@@ -8,11 +8,12 @@ un'istantanea dei dati (`--aggiorna` per riscaricarla), tabella o `--json`.
 |---|---|
 | `pm-kit setup` | chiede indirizzo e utente (file JSON) e la chiave API (portachiavi); si può rilanciare |
 | `pm-kit doctor` | configurazione, chiave, Redmine che risponde, impronta del certificato che scade |
-| `pm-kit mie` | le task aperte assegnate a me: il download leggero, per tutti |
+| `pm-kit mie` | le task aperte assegnate a me: il download leggero, per tutti; ● sulle task cambiate (o nuove per me) da quando le ho viste |
+| `pm-kit novita [--visto]` | cosa è cambiato sulle mie task dall'ultima volta (stato, scadenza, fatto, priorità, assegnatario, o solo note); Invio apre la task, che da lì conta come vista; `--visto` le segna tutte. La prima volta fissa il punto di partenza. Cosa ho visto sta in `viste.json` accanto alle copie (niente titoli né testi) |
 | `pm-kit task --progetto ID --stato aperte\|chiuse\|tutte --persona me\|ID --scadenza GIORNI --testo PAROLA` | una ricerca filtrata sul server (al massimo 200 risultati) |
 | `pm-kit progetti --tutti` | per chi segue i progetti: ogni progetto attivo con aperte, in ritardo, chiuse in 7 giorni, avanzamento, ultima attività; scarica tutto, quindi vuole `--tutti`, `"ruolo": "pm"` o una conferma nel menu |
 | `pm-kit stato PROGETTO --tutti` | per stato, per persona, in ritardo, scadenze dei prossimi 14 giorni |
-| `pm-kit issue N` | una task nel dettaglio: stato, priorità, assegnatario, scadenza, avanzamento, versione, autore, date (in rosso ritardo e urgenza, in giallo scadenza vicina, ferma da più di 14 giorni o ti cita, in verde se è tua); descrizione leggibile, note e cambi di stato dalle più recenti, relazioni e sotto-task, allegati. Da `mie` e `task` si apre anche con Invio sulla riga |
+| `pm-kit issue N` | una task nel dettaglio: stato, priorità, assegnatario, scadenza, avanzamento, versione, autore, date (in rosso ritardo e urgenza, in giallo scadenza vicina, ferma da più di 14 giorni o ti cita, in verde se è tua); descrizione leggibile, note e cambi di stato dalle più recenti, relazioni e sotto-task, allegati. Da `mie` e `task` si apre anche con Invio sulla riga; se è cambiata da quando l'ho vista, prima la sezione «Cosa è cambiato» (campi cambiati e note nuove) |
 | `pm-kit allegati N` | tutti gli allegati della task in `<cartella_download>/<N>/` (la cartella la chiede `setup`); nella vista della task: `d` li scarica, `c` copia il numero |
 | `pm-kit copia si\|no\|cancella` | la copia locale dei dati: attiva, disattiva, cancella |
 
