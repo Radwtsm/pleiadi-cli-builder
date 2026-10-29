@@ -139,6 +139,7 @@ class Screen:
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
+        self.refresh = False
         self.head, self.body, self.foot, self.last = [], [], "", []
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
 

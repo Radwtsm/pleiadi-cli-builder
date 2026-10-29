@@ -16,6 +16,10 @@ Cosa c'è:
 | `Scene` / `play` | `intro.py` | l'intro animata: volo fra le stelle, costellazione, due forme 3D che ruotano e si trasformano, titolo in pixel |
 | `screen.table()` / `--json` | `term.py`, `app.py` | risultati in una tabella che sta nella finestra; con `--json` gli stessi dati su stdout per altri programmi (i messaggi vanno su stderr) |
 | `secret` / `forget` | `credentials.py` | token e chiavi nel portachiavi del sistema (Keychain, Credential Manager, secret-tool): chiesti una volta senza mostrarli, mai in un file o in un argomento |
+| `secret(..., source=)` | `credentials.py` | un segreto già tenuto da un altro strumento, in sola lettura: `CommandSource([...])` (il programma che lo stampa, es. il CLI di un gestore di password) o `ProtectedFile(path)` (file cifrato per l'utente Windows, DPAPI). Mai chiesto né salvato; stesse garanzie: mai negli argomenti, mascherato |
+| `run_live(..., log=)` | `proc.py` | programmi lunghi: tutto l'output nel file di log, indietro solo le righe di errore, l'ultima riga e dov'è il log (meno righe a schermo e nel contesto di Claude) |
+| `app.snapshot()` / `--aggiorna` | `app.py` | dati letti una volta (per esempio mentre `temporary()` tiene aperta la VPN), salvati nella cache dell'utente (file leggibile solo da lui) con l'ora; poi si filtrano in locale e si riscaricano solo con `--aggiorna`. È una copia su disco: per dati aziendali vale la policy dell'azienda |
+| `impronta HOST[:PORTA]` / `server_certificate()` | `webapi.py` | sha256 e scadenza del certificato di un server, da confrontare con il suo proprietario prima di fissarli in `pin_sha256`/`pin_expires`; non salva niente |
 | `temporary` | `access.py` | un accesso riservato (VPN, tunnel, credenziale elevata) aperto solo per l'operazione e chiuso sempre, anche se fallisce; lascia aperto ciò che era già aperto |
 | `ReadOnlyClient` | `webapi.py` | client JSON per API web (tracker, CI, wiki) che ha solo GET: non può cambiare niente, qualunque permesso abbia il token. Pagine, nuovi tentativi, token in un'intestazione, CA interna (`ca_file`) o impronta del certificato fissata con scadenza (`pin_sha256` + `pin_expires`), mai la verifica spenta |
 | `write_commands` / `PolicyError` | `app.py`, `proc.py` | i programmi che cambiano qualcosa (`App(write_commands=[["git", "push"], ["rm"]])`): `run()` li rifiuta nei comandi di sola lettura e con `--prova`. Un segreto letto con `secret()` non può finire negli argomenti di un programma (si passa con `env=`) ed è mascherato `••••` in ogni output |
@@ -138,7 +142,7 @@ Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i m
 ## Test
 
 ```bash
-python3 tests/test_all.py && python3 tests/test_04.py
+for t in tests/test_*.py; do python3 "$t" || break; done
 ```
 
 Pre-commit (test + gitleaks se c'è): `git config core.hooksPath .githooks`.

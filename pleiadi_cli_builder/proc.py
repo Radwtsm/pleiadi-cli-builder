@@ -57,29 +57,48 @@ def run(*cmd, cwd=None, timeout=300, interactive=False, env=None):
         return 1, str(e)
 
 
-def run_live(*cmd, cwd=None, timeout=900, env=None):
+ERROR_LINE = re.compile(r"(?i)\b(error|errore|failed|failure|fatal|exception|traceback|denied|panic)\b")
+
+
+def run_live(*cmd, cwd=None, timeout=900, env=None, log=None):
     """Like run, but every line of the program (also the \\r ones of progress bars) goes into the open spinner
-    line, with the percentage when the line has one. Returns (exit code, output)."""
+    line, with the percentage when the line has one. Returns (exit code, output).
+    log = a file path: the whole output goes there (secrets masked); what comes back is only the error lines, the
+    last line and where the log is — long builds don't flood the screen (or Claude's context)."""
     check(cmd)
     try:
         p = subprocess.Popen(list(cmd), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **NO_WINDOW)
     except OSError as e:
         return 1, str(e)
+    if log:
+        os.makedirs(os.path.dirname(os.path.abspath(log)), exist_ok=True)
+        logf = open(log, "w", encoding="utf-8", newline="\n")
     out, rest, end = [], b"", time.time() + timeout
-    while True:
-        chunk = p.stdout.read1(4096)
-        if not chunk:
-            break
-        lines = re.split(rb"[\r\n]", rest + chunk)
-        rest = lines.pop()
-        for r in lines:
-            t = mask(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", r.decode("utf-8", "replace")).strip())
-            if t:
-                out.append(t)
-                pc = re.search(r"(\d{1,3})(?:[.,]\d+)?\s?%", t)
-                progress(int(pc.group(1)) / 100 if pc and int(pc.group(1)) <= 100 else None, t)
-        if time.time() > end:
-            p.kill()
-            out.append("timeout")
-            break
-    return p.wait(), "\n".join(out)
+    try:
+        while True:
+            chunk = p.stdout.read1(4096)
+            if not chunk:
+                break
+            lines = re.split(rb"[\r\n]", rest + chunk)
+            rest = lines.pop()
+            for r in lines:
+                t = mask(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", r.decode("utf-8", "replace")).strip())
+                if t:
+                    out.append(t)
+                    if log:
+                        logf.write(t + "\n")
+                    pc = re.search(r"(\d{1,3})(?:[.,]\d+)?\s?%", t)
+                    progress(int(pc.group(1)) / 100 if pc and int(pc.group(1)) <= 100 else None, t)
+            if time.time() > end:
+                p.kill()
+                out.append("timeout")
+                break
+    finally:
+        if log:
+            logf.close()
+    code = p.wait()
+    if log:
+        errors = [t for t in out if ERROR_LINE.search(t)][-20:]
+        tail = [out[-1]] if out and out[-1] not in errors else []
+        return code, "\n".join(errors + tail + [f"log: {log}"])
+    return code, "\n".join(out)

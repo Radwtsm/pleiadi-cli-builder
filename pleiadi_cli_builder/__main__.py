@@ -104,6 +104,27 @@ def new(screen, args):
     return 0
 
 
+@app.command("impronta", args="HOST[:PORTA] …", help="sha256 e scadenza del certificato di un server, da confrontare",
+             effects=False, json=True)
+def impronta(screen, args):
+    from .webapi import server_certificate
+    rows = []
+    for a in args:
+        host, _, port = a.partition(":")
+        try:
+            sha, expires = server_certificate(host, int(port or 443))
+            rows.append({"server": a, "sha256": sha, "scade": expires})
+        except (OSError, ValueError) as e:
+            screen.out(screen.c(screen.theme.error, "✗") + f" {a}: {e}")
+    if not args:
+        screen.todo("Uso: impronta HOST[:PORTA] …")
+    screen.table(rows)
+    if rows:
+        screen.todo("Confronta l'impronta con quella che ti dà il proprietario del server (di persona, da un canale\n"
+                    "fidato), mai con questa connessione; poi pin_sha256 e pin_expires. Qui non salvo niente.")
+    return 0 if rows and len(rows) == len(args) else 1
+
+
 @app.command("segreti", args="[--staged | FILE…]", help="cerca segreti nei file in stage (o in quelli indicati)",
              effects=False)
 def segreti(screen, args):

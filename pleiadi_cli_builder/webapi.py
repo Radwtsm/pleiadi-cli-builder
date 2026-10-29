@@ -127,3 +127,28 @@ def pin_step(client, warn_days=30):
     return Step(f"certificate of {client.base}", check,
                 fix="Get the new certificate's sha256 from its owner (never from the connection itself) and update "
                     "pin_sha256 and pin_expires before that date.")
+
+
+def server_certificate(host, port=443, timeout=10):
+    """(sha256, expiry "YYYY-MM-DD" or None) of the certificate a server presents — for comparing with what its
+    owner says before pinning it. Nothing is trusted or saved here: the first contact is exactly what this doesn't
+    trust."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE  # read the certificate, trust nothing
+    with socket.create_connection((host, port), timeout=timeout) as raw, ctx.wrap_socket(raw, server_hostname=host) as s:
+        der = s.getpeercert(binary_form=True)
+    return fingerprint(der), _expiry(der)
+
+
+def _expiry(der):
+    import os, tempfile
+    fd, path = tempfile.mkstemp(suffix=".pem")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(ssl.DER_cert_to_PEM_cert(der))
+        not_after = ssl._ssl._test_decode_cert(path)["notAfter"]  # the stdlib's only certificate decoder
+        return datetime.datetime.fromtimestamp(ssl.cert_time_to_seconds(not_after), datetime.timezone.utc).date().isoformat()
+    except Exception:
+        return None
+    finally:
+        os.remove(path)

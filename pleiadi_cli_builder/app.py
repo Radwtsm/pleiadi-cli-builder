@@ -1,15 +1,16 @@
 """An App = name + look + commands. No arguments: the interactive menu (or the first-run command); `help`: the
 usage generated from the commands; state kept per computer in ~/.config/<name>/state.json (never secrets)."""
-import json, os, sys
+import json, os, re, sys, time
 
 from . import proc
-from .term import Screen, Theme
+from .term import MAC, WIN, Screen, Theme
 
 HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci", "Invio per tornare al menu",
-               "comando sconosciuto", "solo lettura", "--prova"),
+               "comando sconosciuto", "solo lettura", "--prova", "istantanea del {when} · --aggiorna per riscaricarla"),
         "en": ("commands", "no arguments: the menu", "What do you want to do?", "Quit", "Enter to go back to the menu",
-               "unknown command", "read-only", "--dry-run")}
+               "unknown command", "read-only", "--dry-run", "snapshot of {when} · --refresh to download it again")}
 DRY_FLAGS = ("--prova", "--dry-run")
+REFRESH_FLAGS = ("--aggiorna", "--refresh")
 JSON_FLAG = "--json"
 
 
@@ -52,6 +53,10 @@ class App:
         self.theme = theme or Theme(**({"accent": Theme.rgb(accent) if accent.startswith("#") else accent} if accent else {}))
         self.commands, self.first_run, self.menu_subtitle = {}, first_run, menu_subtitle
         self.state_path = os.path.join(os.path.expanduser("~"), ".config", name, "state.json")
+        home = os.path.expanduser("~")
+        base = (os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")) if WIN else \
+            os.path.join(home, "Library", "Caches") if MAC else os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache")
+        self.cache_dir = os.path.join(base, name, "snapshots")
 
     # ── state ──
     def state(self):
@@ -72,6 +77,30 @@ class App:
                 return json.load(f)
         except ValueError:
             raise ValueError(f"{path}: not valid JSON (configuration is data, never code)") from None
+
+    # ── snapshots ──
+    def snapshot(self, name, fetch, refresh=False):
+        """(data, "YYYY-MM-DD HH:MM"): data fetched once (e.g. while temporary() keeps a VPN open) and kept in the
+        user's cache, readable by that user only; later calls read it back until refresh=True (--aggiorna/--refresh
+        sets screen.refresh). Filter it locally: the remote service is asked once. It is a copy of the data on this
+        disk: for data under a company's policy, check that the policy allows it."""
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            raise ValueError(f"snapshot name {name!r}: letters, digits, - and _ only")
+        path = os.path.join(self.cache_dir, name + ".json")
+        if not refresh:
+            old = read_json(path)
+            if isinstance(old, dict) and "taken" in old:
+                return old.get("data"), old["taken"]
+        data, taken = fetch(), time.strftime("%Y-%m-%d %H:%M")
+        os.makedirs(self.cache_dir, exist_ok=True)
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # created private, not chmod later
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            json.dump({"taken": taken, "data": data}, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
+        return data, taken
+
+    def snapshot_note(self, when):
+        return HELP.get(self.lang, HELP["en"])[8].format(when=when)
 
     # ── commands ──
     def command(self, name, help="", menu=None, args="", effects=True, json=False, example=()):
@@ -144,13 +173,14 @@ class App:
         screen.read_only = not c.effects
         screen.dry = c.effects and any(a in DRY_FLAGS for a in args)
         screen.json = JSON_FLAG in args
+        screen.refresh = any(a in REFRESH_FLAGS for a in args)
         if screen.json:
             screen.full = False  # data for another program: plain lines on stderr, JSON on stdout
         proc.POLICY.update(write_commands=self.write_commands, read_only=screen.read_only, dry=screen.dry)
         try:
-            return c.fn(screen, [a for a in args if a not in DRY_FLAGS and a != JSON_FLAG]) or 0
+            return c.fn(screen, [a for a in args if a not in DRY_FLAGS + REFRESH_FLAGS and a != JSON_FLAG]) or 0
         finally:
-            screen.read_only = screen.dry = screen.json = False
+            screen.read_only = screen.dry = screen.json = screen.refresh = False
             proc.POLICY.update(read_only=False, dry=False)
 
     def run(self):

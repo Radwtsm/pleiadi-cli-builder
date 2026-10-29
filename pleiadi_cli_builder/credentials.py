@@ -111,6 +111,61 @@ class MemoryOnly(Keychain):
         return self.items.pop((service, account), None) is not None
 
 
+class CommandSource:
+    """Read-only: a secret another tool already keeps (a password manager's CLI, an encrypted store), read from
+    the first line a program prints. cmd = argv list; "{service}" and "{account}" inside it are replaced.
+        CommandSource(["op", "read", "op://team/{service}/{account}"])
+    There is no set/delete: this library never writes into someone else's store."""
+    def __init__(self, cmd, timeout=30):
+        self.cmd, self.timeout = list(cmd), timeout
+
+    def get(self, service, account):
+        argv = [a.replace("{service}", service).replace("{account}", account) for a in self.cmd]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", timeout=self.timeout)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        line = r.stdout.splitlines()[0].strip() if r.returncode == 0 and r.stdout.strip() else ""
+        return line or None
+
+
+class ProtectedFile:
+    """Read-only: a file encrypted for the current Windows user (DPAPI, e.g. written by another tool with
+    CryptProtectData / PowerShell ConvertFrom-SecureString). Only that user on that computer can read it."""
+    def __init__(self, path):
+        self.path = path
+
+    def get(self, service, account):
+        if not WIN:
+            raise OSError("ProtectedFile (DPAPI) exists only on Windows")
+        import ctypes
+        from ctypes import wintypes
+
+        class BLOB(ctypes.Structure):
+            _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+        try:
+            with open(self.path, "rb") as f:
+                data = f.read()
+        except OSError:
+            return None
+        src = BLOB(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+        out = BLOB()
+        if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
+            return None
+        try:
+            raw = ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(out.pbData)
+        for enc in ("utf-16-le", "utf-8"):
+            try:
+                v = raw.decode(enc).strip("\x00").strip()
+                if v:
+                    return v
+            except UnicodeDecodeError:
+                continue
+        return None
+
+
 def system_keychain():
     if MAC:
         return MacKeychain()
@@ -133,10 +188,17 @@ def keychain():
     return KEYCHAIN
 
 
-def secret(service, account, screen=None, question=None):
+def secret(service, account, screen=None, question=None, source=None):
     """The secret for (service, account): from the keychain, or asked once with hidden input and stored there.
     Returns None when it is missing and nobody can answer. `service` = your tool's name + what it is for (e.g.
-    "deploy-kit.tracker"); `account` = the user or the server it belongs to."""
+    "deploy-kit.tracker"); `account` = the user or the server it belongs to.
+    source = a read-only store kept by another tool (CommandSource, ProtectedFile): read from there only — never
+    asked, never stored — with the same guarantees (never in arguments, masked in every output)."""
+    if source is not None:
+        v = source.get(service, account)
+        if v:
+            SECRETS.add(v)
+        return v or None
     k = keychain()
     v = k.get(service, account)
     if v:
