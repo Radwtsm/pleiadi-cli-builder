@@ -228,6 +228,30 @@ class Indicators(unittest.TestCase):
                                                {"progetto": "P2", "task": 2, "in_ritardo": 0}])
 
 
+class StateMap(unittest.TestCase):
+    """The tracker's own status names (In Progress, Pending, Resolved…) grouped by the config into the indicators."""
+    def data(self):
+        st = lambda i, name: {"id": i, "status": {"name": name}, "assigned_to": U(7, "Anna"), "project": U(1, "P1"),
+                              "updated_on": D(-1) + "T09:00:00Z"}
+        return {"user": {"id": 7}, "open": [st(1, "In Progress"), st(2, "In Progress"), st(3, "Pending"),
+                                            st(4, "Feedback"), st(5, "Resolved"), st(6, "New")]}
+
+    def test_config_order_and_the_rest(self):
+        states = {"in corso": ["In Progress"], "in attesa": ["pending", "Feedback"], "risolte": "Resolved"}
+        ind = redmine.my_indicators(self.data(), TODAY, states)
+        self.assertEqual(ind["per_stato"], [{"stato": "in corso", "task": 2}, {"stato": "in attesa", "task": 2},
+                                            {"stato": "risolte", "task": 1}, {"stato": "altro", "task": 1}])
+
+    def test_without_a_map_the_tracker_names(self):
+        ind = redmine.my_indicators(self.data(), TODAY)
+        self.assertEqual(ind["per_stato"][0], {"stato": "In Progress", "task": 2})
+        self.assertEqual(len(ind["per_stato"]), 5)
+
+    def test_bad_map_says_where(self):
+        with self.assertRaises(ValueError):
+            redmine.my_indicators(self.data(), TODAY, {"in corso": 3})
+
+
 class Commands(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -345,6 +369,23 @@ class Commands(unittest.TestCase):
             self.assertEqual(json.loads(out), [])
         finally:
             ISSUES[2] = old
+
+    def test_state_map_from_config_in_riepilogo_and_mie(self):
+        cfg = os.environ["PM_KIT_CONFIG"]
+        with open(cfg) as f:
+            c = json.load(f)
+        with open(cfg, "w") as f:
+            json.dump({**c, "stati": {"lavoro": ["In corso"], "da iniziare": ["Nuova"]}}, f)
+        code, out, err = quiet(lambda: app.main(["riepilogo", "--json"]))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["per_stato"], [{"stato": "lavoro", "task": 2}])
+        code, out, err = quiet(lambda: app.main(["mie"]))
+        self.assertIn("stato: lavoro 2", out)
+        with open(cfg, "w") as f:
+            json.dump({**c, "stati": {"lavoro": 3}}, f)
+        code, out, err = quiet(lambda: app.main(["doctor"]))
+        self.assertEqual(code, 1)
+        self.assertIn("mappa degli stati", out)
 
     def test_issue_command(self):
         code, out, err = quiet(lambda: app.main(["issue", "101", "--json"]))

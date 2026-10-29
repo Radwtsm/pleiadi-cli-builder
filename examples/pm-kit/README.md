@@ -21,6 +21,14 @@ Configurazione (`~/.config/pm-kit/config.json`, o il percorso in `PM_KIT_CONFIG`
 `ca_file` (CA interna) oppure `pin_sha256` + `pin_expires` (vedi `pleiadi-cli-builder impronta HOST`), e `vpn` con
 tre righe di comando `up`, `down`, `status` (liste di argomenti). È un dato: niente codice nel file.
 
+Gli indicatori sopra `mie` (e `riepilogo --json`, chiave `per_stato`) contano le task anche per stato. Con `stati`
+gli stati di Redmine si raggruppano nelle etichette che servono, in quest'ordine, il resto va in «altro» (maiuscole
+indifferenti; `doctor` controlla che sia scritta bene):
+
+    "stati": {"in corso": ["In Progress"], "in attesa": ["Pending", "Feedback"], "risolte": ["Resolved"]}
+
+Senza `stati`: i nomi di Redmine così come sono, i più numerosi prima.
+
 Usa solo i campi standard dell'API REST di Redmine (`/projects.json`, `/issues.json`, `/users/current.json`); per
 campi personalizzati o versioni si aggiunge un calcolo in `pm_kit/redmine.py` con il suo test.
 

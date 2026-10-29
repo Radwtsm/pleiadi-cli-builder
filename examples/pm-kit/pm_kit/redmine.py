@@ -291,9 +291,29 @@ def issue_detail(issue, me, today, statuses=None, seen=None):
                                             "ok": "assegnata a te"})
 
 
-def my_indicators(data, today):
+def by_state(issues, states=None):
+    """[{stato, task}]: with `states` ({label: [tracker status names]} from the config, e.g. {"in corso":
+    ["In Progress"], "in attesa": ["Pending"], "risolte": ["Resolved"]}) the labels in that order, then «altro» for
+    the rest; without, the tracker's names, most first. Names match in any case; empty labels are left out.
+    ValueError when the map isn't {label: name or [names]}."""
+    names = lambda i: (i.get("status") or {}).get("name", "—")
+    if not states:
+        counts = {}
+        for i in issues:
+            counts[names(i)] = counts.get(names(i), 0) + 1
+        return [{"stato": k, "task": n} for k, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    if not isinstance(states, dict) or not all(isinstance(v, (str, list)) for v in states.values()):
+        raise ValueError('"stati" va scritto {"etichetta": ["Nome stato", …]}')
+    label = {n.lower(): k for k, v in states.items() for n in ([v] if isinstance(v, str) else v)}
+    counts = dict.fromkeys(list(states) + ["altro"], 0)
+    for i in issues:
+        counts[label.get(names(i).lower(), "altro")] += 1
+    return [{"stato": k, "task": n} for k, n in counts.items() if n]
+
+
+def my_indicators(data, today, states=None):
     """The few numbers everyone wants above their own open tasks: how many, late, due within 7 days, still for
-    more than 14 days, by priority and by project."""
+    more than 14 days, by status (grouped by `states`, see by_state), by priority and by project."""
     me = (data.get("user") or {}).get("id")
     mine = [i for i in data.get("open", []) if (i.get("assigned_to") or {}).get("id") == me]
     week = (today + datetime.timedelta(days=7)).isoformat()
@@ -310,5 +330,6 @@ def my_indicators(data, today):
     return {"aperte": len(mine), "in_ritardo": sum(_late(i, today) for i in mine),
             "in_scadenza_7g": sum(bool(i.get("due_date")) and today.isoformat() <= i["due_date"] <= week for i in mine),
             "ferme_14g": sum(_day(i.get("updated_on")) < still for i in mine),
+            "per_stato": by_state(mine, states),
             "per_priorita": by_prio,
             "per_progetto": [{"progetto": k, **v} for k, v in sorted(projects.items(), key=lambda kv: (-kv[1]["task"], kv[0]))]}

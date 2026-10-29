@@ -8,6 +8,8 @@ Configurazione (dato, JSON): $PM_KIT_CONFIG oppure ~/.config/pm-kit/config.json
      "ruolo": "pm",                         segue i progetti: `progetti` e `stato` scaricano tutto senza --tutti
      "aggiorna_ogni_minuti": 10,            --aggiorna più ravvicinati usano la copia (meno carico su Redmine)
      "cartella_download": "~/Downloads/pm-kit",   gli allegati di una task vanno in <cartella>/<numero>/
+     "stati": {"in corso": ["In Progress"], "in attesa": ["Pending"], "risolte": ["Resolved"]},
+                                            negli indicatori gli stati di Redmine raggruppati così (il resto: «altro»)
      "ca_file": "...", oppure "pin_sha256": "...", "pin_expires": "AAAA-MM-GG",   certificato interno
      "vpn": {"up": [...], "down": [...], "status": [...]}}                 la VPN, aperta solo per scaricare
 La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file.
@@ -167,12 +169,16 @@ def mie(screen, args):
     if was is None:  # the first look is the baseline: from now on ● = changed since
         mark_seen(my_open(data), replace=True)
     rows = redmine.my_tasks(data, was)
-    show_indicators(screen, redmine.my_indicators(data, datetime.date.today()))
+    show_indicators(screen, indicators(data))
     if any(r["novità"] for r in rows) and not screen.json:
         screen.info(f"● = cambiata da quando l'hai vista: `{app.cmd('novita')}` dice cosa")
     i = screen.table(rows, ["novità", "id", "progetto", "titolo", "stato", "scadenza", "fatto"], {"novità": "●"}, pick=True)
     screen.info(screen.dim(app.snapshot_note(when)))
     return issue_cmd(screen, [str(rows[i]["id"])]) if i is not None else 0
+
+
+def indicators(data):
+    return redmine.my_indicators(data, datetime.date.today(), (config() or {}).get("stati"))
 
 
 def show_indicators(screen, ind):
@@ -185,6 +191,8 @@ def show_indicators(screen, ind):
         screen.out("    " + screen.dim(" · ".join(f"{p['progetto']} {p['task']}" + (f" ({p['in_ritardo']} in ritardo)"
                                                                                    if p["in_ritardo"] else "")
                                               for p in ind["per_progetto"])))
+    if ind.get("per_stato"):
+        screen.out("    " + screen.dim("stato: " + " · ".join(f"{p['stato']} {p['task']}" for p in ind["per_stato"])))
     if ind["per_priorita"]:
         screen.out("    " + screen.dim("priorità: " + " · ".join(f"{p['priorità']} {p['task']}" for p in ind["per_priorita"])))
     screen.out("")
@@ -220,7 +228,10 @@ def riepilogo(screen, args):
     data, when = mine(screen)
     if data is None:
         return failed(screen, when, {})
-    ind = redmine.my_indicators(data, datetime.date.today())
+    try:
+        ind = indicators(data)
+    except ValueError as e:
+        return failed(screen, f"{config_path()}: {e}", {})
     if not screen.data(ind):
         show_indicators(screen, ind)
         screen.info(screen.dim(app.snapshot_note(when)))
@@ -443,6 +454,14 @@ def steps(screen):
                 fix=f'In {path}: "vpn": null se non serve, oppure "vpn": {{"up": [...], "down": [...], "status": [...]}}'),
            Step("Redmine risponde", reaches)]
     cfg = config()
+    if cfg and "stati" in cfg:
+        def states_ok():
+            try:
+                redmine.by_state([], cfg["stati"])
+                return True, " · ".join(cfg["stati"])
+            except ValueError as e:
+                return False, str(e)
+        out.append(Step("mappa degli stati", states_ok, fix=f'In {path}: "stati": {{"in corso": ["In Progress"], …}}'))
     if cfg and cfg.get("pin_sha256"):
         out.append(pin_step(client(cfg, None)))
 
