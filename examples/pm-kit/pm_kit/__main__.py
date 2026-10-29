@@ -10,7 +10,7 @@ Configurazione (dato, JSON): $PM_KIT_CONFIG oppure ~/.config/pm-kit/config.json
      "ca_file": "...", oppure "pin_sha256": "...", "pin_expires": "AAAA-MM-GG",   certificato interno
      "vpn": {"up": [...], "down": [...], "status": [...]}}                 la VPN, aperta solo per scaricare
 La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file."""
-import datetime, os, urllib.error
+import datetime, os, shlex, urllib.error
 
 from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, credentials, pin_step, read_json, run, run_steps,
                                  secret, temporary, write_json)
@@ -224,8 +224,27 @@ def steps(screen):
         keep = screen.confirm("Tengo i dati scaricati sul computer? (i comandi poi rispondono subito)",
                               "Sì, tieni una copia locale", "No, solo in memoria: ogni avvio riscarica")
         pm = not screen.confirm("Segui i progetti di altri (sei un PM)?", "No, mi bastano le mie task", "Sì, sono un PM")
-        write_json(path, {"url": url.rstrip("/"), "user": user or "default", "copia_locale": keep,
+        old = app.config(path) or {}  # what was written by hand (vpn, pin…) stays
+        write_json(path, {**old, "url": url.rstrip("/"), "user": user or "default", "copia_locale": keep,
                           **({"ruolo": "pm"} if pm else {})})
+        return True
+
+    def vpn_known():
+        cfg = config()
+        if not cfg or "vpn" not in cfg:
+            return False, "non ancora detto se serve"
+        return True, "comandi configurati" if (cfg["vpn"] or {}).get("up") else "non serve"
+
+    def ask_vpn():
+        cfg = app.config(path) or {}
+        if screen.confirm("Per arrivare a Redmine serve una VPN?", "No", "Sì"):
+            write_json(path, {**cfg, "vpn": None})
+            return True, "non serve"
+        lines = {k: screen.ask(f"Comando che {what} la VPN:") for k, what in
+                 (("up", "accende"), ("down", "spegne"), ("status", "dice se è accesa (esce con 0 se sì)"))}
+        if not lines["up"] or not lines["down"]:
+            return False, "servono almeno i comandi per accenderla e spegnerla"
+        write_json(path, {**cfg, "vpn": {k: shlex.split(v) for k, v in lines.items() if v}})
         return True
 
     def ask_key():
@@ -248,6 +267,8 @@ def steps(screen):
                 fix=f"Scrivi {path} con url e user (vedi `pm-kit help`)", plan=f"scrivo {path}"),
            Step("chiave API nel portachiavi", lambda: bool(stored_key(config())), apply=ask_key,
                 fix="`pm-kit setup` la chiede una volta", plan="chiedo la chiave e la salvo nel portachiavi"),
+           Step("VPN", vpn_known, apply=ask_vpn, plan=f"chiedo se serve la VPN e la scrivo in {path}",
+                fix=f'In {path}: "vpn": null se non serve, oppure "vpn": {{"up": [...], "down": [...], "status": [...]}}'),
            Step("Redmine risponde", reaches)]
     cfg = config()
     if cfg and cfg.get("pin_sha256"):

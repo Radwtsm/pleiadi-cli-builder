@@ -79,7 +79,11 @@ class Fingerprint(unittest.TestCase):
                                 "--json"], capture_output=True, text=True, encoding="utf-8", env=env)
             row = json.loads(r.stdout)[0]
             self.assertEqual(row["sha256"], sha)
-            self.assertIn("proprietario", r.stderr)  # it says to compare with a trusted source
+            self.assertEqual(r.stderr.count("{"), 0)  # nothing of the data on stderr, nothing else on stdout
+            r = subprocess.run([sys.executable, "-m", "pleiadi_cli_builder", "impronta", f"127.0.0.1:{srv.server_port}"],
+                               capture_output=True, text=True, encoding="utf-8", env=env)
+            self.assertIn(sha, r.stdout)  # the whole value, to copy into the config
+            self.assertIn("proprietario", r.stdout)
         finally:
             srv.shutdown()
             srv.server_close()

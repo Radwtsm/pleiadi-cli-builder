@@ -118,10 +118,14 @@ def impronta(screen, args):
             screen.out(screen.c(screen.theme.error, "✗") + f" {a}: {e}")
     if not args:
         screen.todo("Uso: impronta HOST[:PORTA] …")
-    screen.table(rows)
-    if rows:
-        screen.todo("Confronta l'impronta con quella che ti dà il proprietario del server (di persona, da un canale\n"
-                    "fidato), mai con questa connessione; poi pin_sha256 e pin_expires. Qui non salvo niente.")
+    if screen.json:  # the data alone on stdout
+        screen.table(rows)
+    else:
+        for r in rows:  # one value per line, whole: it gets copied into the config
+            screen.out(f"    {r['server']}\n      sha256       {r['sha256']}\n      pin_expires  {r['scade'] or '?'}")
+        if rows:
+            screen.todo("Confronta l'impronta con quella che ti dà il proprietario del server (di persona, da un\n"
+                        "canale fidato), mai con questa connessione; poi pin_sha256 e pin_expires. Qui non salvo niente.")
     return 0 if rows and len(rows) == len(args) else 1
 
 

@@ -174,7 +174,7 @@ class Commands(unittest.TestCase):
         self.home = tempfile.mkdtemp()
         cfg = os.path.join(self.home, "pm-kit.json")
         with open(cfg, "w") as f:
-            json.dump({"url": f"http://127.0.0.1:{self.srv.server_port}", "user": "anna"}, f)
+            json.dump({"url": f"http://127.0.0.1:{self.srv.server_port}", "user": "anna", "vpn": None}, f)
         credentials.KEYCHAIN = credentials.MemoryOnly()
         credentials.keychain().set("pm-kit.redmine", "anna", KEY)
         self.env = mock.patch.dict(os.environ, {"PM_KIT_CONFIG": cfg})
@@ -252,6 +252,31 @@ class Commands(unittest.TestCase):
         self.assertEqual(code, 1)
         code, out, err = quiet(lambda: app.main(["issue", "abc"]))
         self.assertEqual(code, 2)
+
+    def test_setup_keeps_hand_written_entries(self):
+        cfg = os.environ["PM_KIT_CONFIG"]
+        with open(cfg, "w") as f:
+            json.dump({"vpn": {"up": ["vpn-cli", "up"]}, "pin_sha256": "ab" * 32, "pin_expires": "2099-01-01"}, f)
+        answers = iter(["https://redmine.example", "anna"])
+        confirms = iter([True, True])  # keep a local copy; not a PM
+        with mock.patch("pleiadi_cli_builder.term.Screen.ask", lambda self, q, d="": next(answers)), \
+             mock.patch("pleiadi_cli_builder.term.Screen.confirm", lambda self, q, y=None, n=None: next(confirms)):
+            from pm_kit.__main__ import steps
+            from pleiadi_cli_builder import Screen
+            steps(Screen("t"))[0].apply()
+        with open(cfg) as f:
+            c = json.load(f)
+        self.assertEqual(c["url"], "https://redmine.example")
+        self.assertEqual(c["vpn"], {"up": ["vpn-cli", "up"]})  # kept
+        self.assertEqual(c["pin_expires"], "2099-01-01")
+
+    def test_setup_asks_for_the_vpn_before_trying(self):
+        from pm_kit.__main__ import steps
+        from pleiadi_cli_builder import Screen
+        names = [s.name for s in steps(Screen("t"))]
+        self.assertLess(names.index("VPN"), names.index("Redmine risponde"))
+        self.set_config(vpn={"up": ["a"], "down": ["b"], "status": ["c"]})
+        self.assertTrue(steps(Screen("t"))[names.index("VPN")].check()[0])
 
     def set_config(self, **kv):
         cfg = os.environ["PM_KIT_CONFIG"]
