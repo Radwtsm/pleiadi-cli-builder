@@ -265,7 +265,11 @@ class App:
                 if self.first_run and not self.state().get("first_run_done"):
                     code = self.call(self.commands[self.first_run], screen, [])
                     self.save_state(first_run_done=True)
-                    return code
+                    if not sys.stdin.isatty():
+                        return code
+                    screen.results = []  # owner 29/10: after the first setup, straight into the menu
+                    screen.ask(screen.dim(HELP.get(self.lang, HELP["en"])[4]))
+                    return self.menu(screen)
                 return self.menu(screen)
             if argv[0] in self.sections:
                 sub = self.sections[argv[0]]

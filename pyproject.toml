@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pleiadi-cli-builder"
-version = "0.8.1"
+version = "0.8.2"
 description = "Guided command-line tools: full-screen layout, arrow-key menus, live progress, rerunnable steps, doctor, one-file bundle, animated intro. Standard library only."
 readme = "README.md"
 license = { text = "MIT" }

@@ -33,10 +33,19 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
 
 class Theme:
     """Colors as SGR codes (e.g. "38;5;153" or "38;2;232;37;63"), the spinner frames and the glyphs."""
-    def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1",
-                 spinner="✦✧⋆·⋆✧", mark="✦", step="⏺", attach="⎿", arrow="→", prompt="❯"):
+    FULL = dict(spinner="✦✧⋆·⋆✧", mark="✦", step="⏺", attach="⎿", arrow="→", prompt="❯", yes="✓", no="✗",
+                corners="╭╮╰╯")
+    # only characters every console font has (the classic Windows console: Consolas, Lucida Console)
+    SAFE = dict(spinner="|/-\\", mark="*", step="●", attach="└", arrow="→", prompt=">", yes="√", no="x",
+                corners="┌┐└┘")
+
+    def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1", glyphs=None, **marks):
+        """glyphs = "full" or "safe"; default: safe in the classic Windows console (no Windows Terminal),
+        PCB_GLYPHS=safe|full to choose. marks = any of spinner, mark, step, attach, arrow, prompt, yes, no, corners."""
         self.accent, self.ok, self.error, self.dim, self.bold = accent, ok, error, dim, bold
-        self.spinner, self.mark, self.step, self.attach, self.arrow, self.prompt = spinner, mark, step, attach, arrow, prompt
+        glyphs = glyphs or os.environ.get("PCB_GLYPHS") or ("safe" if WIN and not os.environ.get("WT_SESSION") else "full")
+        for k, v in {**(self.SAFE if glyphs == "safe" else self.FULL), **marks}.items():
+            setattr(self, k, v)
 
     @staticmethod
     def rgb(hex_color):
@@ -67,6 +76,27 @@ def clip(s, width):
     return "".join(out) + ("\x1b[0m" if "\x1b[" in s else "")
 
 
+CBREAK = {"depth": 0, "saved": None}  # single-key mode kept on while a full screen is open
+
+
+def cbreak(on):
+    """Single-key mode for the whole time a screen is open (not toggled per key: what is typed between two reads —
+    fast typing, a paste — would land in the line buffer and get lost or arrive only with Enter)."""
+    if WIN or not sys.stdin.isatty():
+        return
+    import termios, tty
+    fd = sys.stdin.fileno()
+    if on:
+        if CBREAK["depth"] == 0:
+            CBREAK["saved"] = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+        CBREAK["depth"] += 1
+    elif CBREAK["depth"]:
+        CBREAK["depth"] -= 1
+        if CBREAK["depth"] == 0 and CBREAK["saved"]:
+            termios.tcsetattr(fd, termios.TCSADRAIN, CBREAK["saved"])
+
+
 def key():
     """One key without Enter: "up", "down", "enter", "backspace" or the character. Ctrl+C raises as usual."""
     if WIN:
@@ -79,9 +109,11 @@ def key():
     else:
         import termios, tty
         fd = sys.stdin.fileno()
-        before = termios.tcgetattr(fd)
+        kept = CBREAK["depth"] > 0
+        before = None if kept else termios.tcgetattr(fd)
         try:
-            tty.setcbreak(fd)
+            if not kept:
+                tty.setcbreak(fd)
             b = os.read(fd, 1)
             if b == b"\x1b":
                 import select
@@ -95,7 +127,8 @@ def key():
                 b += os.read(fd, 1 if b[0] < 0xE0 else 2 if b[0] < 0xF0 else 3)
             k = b.decode(errors="ignore")
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, before)
+            if before is not None:
+                termios.tcsetattr(fd, termios.TCSADRAIN, before)
         k = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down", "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
              "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[F": "end", "\x1bOF": "end",
              "\x1b[4~": "end"}.get(k, k)
@@ -165,6 +198,7 @@ class Screen:
         if not self.full or self.opened:
             return
         self.opened = True
+        cbreak(True)
         sys.stdout.write("\033[?1049h\033[?25l")
         SCREENS.append(self)
         import atexit
@@ -189,6 +223,7 @@ class Screen:
         if not self.opened:
             return
         self.opened = False
+        cbreak(False)
         if self in SCREENS:
             SCREENS.remove(self)
         sys.stdout.write("\033[?25h\033[?1049l")
@@ -200,11 +235,17 @@ class Screen:
         """For a program that talks to the person by itself (a login, an installer): normal screen."""
         if self.opened:
             self.suspended = True  # nothing draws over the program (or the hidden prompt) meanwhile
+            if CBREAK["depth"] and CBREAK["saved"]:  # the other program gets a normal terminal
+                import termios
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, CBREAK["saved"])
             sys.stdout.write("\033[?25h\033[?1049l")
             sys.stdout.flush()
 
     def resume(self):
         self.suspended = False
+        if self.opened and CBREAK["depth"] and not WIN and sys.stdin.isatty():
+            import tty
+            tty.setcbreak(sys.stdin.fileno())
         if self.opened:
             sys.stdout.write("\033[?1049h\033[?25l")
             self.size = None
@@ -286,9 +327,10 @@ class Screen:
         vis = [visible_len(r) for r in lines]
         w = self.width = max(max(vis) + 2, self.width)  # all boxes equally wide
         d = self.theme.dim
-        return ([self.c(d, "╭" + "─" * w + "╮")]
+        tl, tr, bl, br = self.theme.corners
+        return ([self.c(d, tl + "─" * w + tr)]
                 + [self.c(d, "│") + " " + r + " " * (w - n - 1) + self.c(d, "│") for r, n in zip(lines, vis)]
-                + [self.c(d, "╰" + "─" * w + "╯")])
+                + [self.c(d, bl + "─" * w + br)])
 
     def box(self, lines):
         self.out("")
@@ -448,11 +490,11 @@ class Screen:
         if r.planned:
             self.out(self._indent() + self.acc("○") + f" {r.name}" + self.dim(f" · {self.t['would']}: {r.note}"))
         elif r.skipped:
-            self.out(self._indent() + self.dim(f"✓ {r.name}" + (f" · {r.note}" if r.note else "")))
+            self.out(self._indent() + self.dim(f"{th.yes} {r.name}" + (f" · {r.note}" if r.note else "")))
         elif r.ok:
-            self.out(self._indent() + self.c(th.ok, "✓") + f" {r.name}" + (self.dim(f" · {r.note}") if r.note else ""))
+            self.out(self._indent() + self.c(th.ok, th.yes) + f" {r.name}" + (self.dim(f" · {r.note}") if r.note else ""))
         else:
-            self.out(self._indent() + self.c(th.error, "✗") + f" {r.name}")
+            self.out(self._indent() + self.c(th.error, th.no) + f" {r.name}")
             if r.fix:
                 self.todo(r.fix)
             tries = 0  # never forever: at most 3, and none if nobody answers
@@ -464,9 +506,9 @@ class Screen:
                 except Exception as x:  # an error while retrying doesn't stop the run
                     self.todo(f"{self.t['not_yet']}: {x}")
                 if r.ok:
-                    self.out("    " + self.c(th.ok, "✓") + f" {r.name}")
+                    self.out("    " + self.c(th.ok, th.yes) + f" {r.name}")
                     break
-                self.out("    " + self.c(th.error, "✗") + f" {r.name} · {self.t['not_yet']}")
+                self.out("    " + self.c(th.error, th.no) + f" {r.name} · {self.t['not_yet']}")
         return r.ok
 
     def summary(self, minutes=None):
@@ -475,10 +517,10 @@ class Screen:
         planned = [r for r in self.results if r.planned]
         everything = len(good) == len(self.results)
         th = self.theme
-        lines = [(self.c(th.ok, "✓ ") if everything else self.acc(th.mark + " "))
+        lines = [(self.c(th.ok, th.yes + " ") if everything else self.acc(th.mark + " "))
                  + self.bold(self.t["ok_count"].format(ok=len(good), tot=len(self.results)))
                  + (self.dim(f" · {minutes} {self.t['minutes']}") if minutes is not None else "")]
-        lines += ["  " + self.c(th.error, "✗") + f" {r.name}" for r in self.results if not (r.ok or r.skipped or r.planned)]
+        lines += ["  " + self.c(th.error, th.no) + f" {r.name}" for r in self.results if not (r.ok or r.skipped or r.planned)]
         if planned:
             lines.append("  " + self.acc("○ ") + self.t["planned"].format(n=len(planned)))
         elif not everything:
