@@ -40,7 +40,8 @@ python3 -m pleiadi_cli_builder bundle deploy-kit deploy_kit.__main__:main dist/d
 ```
 
 `dist/deploy-kit.pyz` gira con `python3 deploy-kit.pyz`; accanto c'è `deploy-kit.pyz.sha256` da pubblicare
-insieme, così `self_update(url, dest, sha256_url=url + ".sha256")` aggiorna solo con il file giusto.
+insieme: `self_update(url, dest, url + ".sha256")` aggiorna solo se l'impronta corrisponde (obbligatoria: il tuo
+codice che si aggiorna da solo è codice di terzi per chi lo riceve).
 
 ```python
 import shutil
@@ -67,6 +68,12 @@ app.run()
 - Fuori da un terminale vero (script, CI, Claude) tutto diventa righe semplici e le domande prendono la scelta
   consigliata; `<NOME>_PLAIN=1` o `NO_COLOR` fanno lo stesso a mano.
 - Niente dipendenze: un computer appena acceso deve poter lanciare il tool.
+- Ogni comando dichiara se cambia qualcosa. `effects=False` = solo lettura, imposta dal codice: i suoi passi
+  possono solo controllare. Chi ha effetti riceve `--prova` (`--dry-run`): `run_steps` dice cosa farebbe (`plan`)
+  senza farlo, e nel tuo codice `screen.dry` è vero.
+- La configurazione di un progetto resta dato (JSON): la libreria non importa né esegue file forniti da altri.
+
+Non incluso (per ora): un terminale con Claude dentro il tool.
 
 Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i mezzi blocchi (più leggero).
 
@@ -75,5 +82,7 @@ Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i m
 ```bash
 python3 tests/test_all.py
 ```
+
+Pre-commit (test + gitleaks se c'è): `git config core.hooksPath .githooks`.
 
 Licenza MIT.

@@ -59,6 +59,23 @@ class Apps(unittest.TestCase):
         self.assertIn("x-test hi", plain(lambda: self.app.main(["help"]))[1])
         self.assertEqual(plain(lambda: self.app.main(["nope"]))[0], 2)
 
+    def test_dry_run_and_read_only(self):
+        made = []
+        steps = [Step("crea", lambda: bool(made), apply=lambda: made.append(1) or True, plan="creo la cartella")]
+        self.app.command("fa", help="cambia")(lambda s, a: run_steps(s, steps) or 1)
+        self.app.command("guarda", help="legge", effects=False)(lambda s, a: run_steps(s, steps) or 1)
+        code, out = plain(lambda: self.app.main(["fa", "--dry-run"]))
+        self.assertEqual(made, [])
+        self.assertIn("○ crea · would: creo la cartella", out)
+        self.assertIn("1 to do, nothing changed", out)
+        plain(lambda: self.app.main(["guarda"]))  # read-only: the code refuses to apply
+        self.assertEqual(made, [])
+        plain(lambda: self.app.main(["fa"]))
+        self.assertEqual(made, [1])
+        usage = self.app.usage()
+        self.assertIn("x-test fa [--dry-run]", usage)
+        self.assertIn("legge (read-only)", usage)
+
     def test_state(self):
         self.app.save_state(a=1)
         self.app.save_state(b=2)
@@ -100,7 +117,7 @@ class Ship(unittest.TestCase):
         dest = os.path.join(d, "installed", "deploy-kit.pyz")
         url = "file://" + out
         self.assertEqual(self_update(url, dest, sha256_url=url + ".sha256"), (True, "updated"))
-        self.assertEqual(self_update(url, dest), (True, "up to date"))
+        self.assertEqual(self_update(url, dest, url + ".sha256"), (True, "up to date"))
         with open(out + ".sha256", "w") as f:
             f.write("0" * 64)
         self.assertFalse(self_update(url, dest + "2", sha256_url=url + ".sha256")[0])

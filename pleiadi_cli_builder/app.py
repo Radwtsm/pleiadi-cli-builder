@@ -5,9 +5,10 @@ import json, os, sys
 from .term import Screen, Theme
 
 HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci", "Invio per tornare al menu",
-               "comando sconosciuto"),
+               "comando sconosciuto", "solo lettura", "--prova"),
         "en": ("commands", "no arguments: the menu", "What do you want to do?", "Quit", "Enter to go back to the menu",
-               "unknown command")}
+               "unknown command", "read-only", "--dry-run")}
+DRY_FLAGS = ("--prova", "--dry-run")
 
 
 def read_json(path, default=None):
@@ -26,8 +27,8 @@ def write_json(path, data):
 
 
 class Command:
-    def __init__(self, name, fn, help="", menu=None, args=""):
-        self.name, self.fn, self.help, self.menu, self.args = name, fn, help, menu, args
+    def __init__(self, name, fn, help="", menu=None, args="", effects=True):
+        self.name, self.fn, self.help, self.menu, self.args, self.effects = name, fn, help, menu, args, effects
 
 
 class App:
@@ -55,10 +56,12 @@ class App:
         write_json(self.state_path, s)
 
     # ── commands ──
-    def command(self, name, help="", menu=None, args=""):
-        """menu = the text in the interactive menu (None = not in the menu); args = usage shown in help."""
+    def command(self, name, help="", menu=None, args="", effects=True):
+        """menu = the text in the interactive menu (None = not in the menu); args = usage shown in help.
+        effects=False declares a read-only command: its steps can only check (enforced in run_steps). A command
+        with effects gets --prova/--dry-run: screen.dry is True and run_steps only says what it would do."""
         def add(fn):
-            self.commands[name] = Command(name, fn, help, menu, args)
+            self.commands[name] = Command(name, fn, help, menu, args, effects)
             return fn
         return add
 
@@ -67,7 +70,8 @@ class App:
 
     def usage(self):
         t = HELP.get(self.lang, HELP["en"])
-        rows = [(f"{self.name} {c.name}" + (f" {c.args}" if c.args else ""), c.help) for c in self.commands.values()]
+        rows = [(f"{self.name} {c.name}" + (f" {c.args}" if c.args else "") + (f" [{t[7]}]" if c.effects else ""),
+                 c.help + (f" ({t[6]})" if not c.effects else "")) for c in self.commands.values()]
         w = max([len(r[0]) for r in rows] + [10]) + 2
         return "\n".join([f"{self.title} — {t[0]} ({t[1]})", ""] + [f"  {a:<{w}}{b}" for a, b in rows])
 
@@ -81,7 +85,7 @@ class App:
             i = screen.choose(t[2], [c.menu for c in items] + [t[3]])
             if i == len(items):
                 return code
-            code = items[i].fn(screen, []) or 0
+            code = self.call(items[i], screen, [])
             screen.results = []  # each item's summary counts only its own steps
             if not sys.stdin.isatty():
                 return code
@@ -99,7 +103,7 @@ class App:
         try:
             if not argv:
                 if self.first_run and not self.state().get("first_run_done"):
-                    code = self.commands[self.first_run].fn(screen, []) or 0
+                    code = self.call(self.commands[self.first_run], screen, [])
                     self.save_state(first_run_done=True)
                     return code
                 return self.menu(screen)
@@ -107,11 +111,20 @@ class App:
             if not c:
                 print(f"{t[5]}: {argv[0]}\n\n{self.usage()}", file=sys.stderr)
                 return 2
-            return c.fn(screen, argv[1:]) or 0
+            return self.call(c, screen, argv[1:])
         except KeyboardInterrupt:
             return 130
         finally:
             screen.close()
+
+    @staticmethod
+    def call(c, screen, args):
+        screen.read_only = not c.effects
+        screen.dry = c.effects and any(a in DRY_FLAGS for a in args)
+        try:
+            return c.fn(screen, [a for a in args if a not in DRY_FLAGS]) or 0
+        finally:
+            screen.read_only = screen.dry = False
 
     def run(self):
         sys.exit(self.main())

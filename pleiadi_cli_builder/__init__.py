@@ -8,6 +8,6 @@ from .proc import run, run_live
 from .steps import Result, Step, run_steps
 from .term import Screen, Theme, clip, key, progress
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["App", "Screen", "Theme", "Step", "Result", "run_steps", "run", "run_live", "progress", "Scene", "play",
            "SHAPES", "TINTS", "bundle", "install_launcher", "self_update", "read_json", "write_json", "clip", "key"]

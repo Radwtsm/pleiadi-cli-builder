@@ -65,15 +65,15 @@ def download(url, timeout=60, agent="pleiadi-cli-builder"):
         return r.read()
 
 
-def self_update(url, dest, sha256_url=None):
-    """Downloads the latest version to `dest`. Replaced only if it is valid Python (or a zip app) and, with
-    `sha256_url`, its checksum matches. Returns (ok, message)."""
+def self_update(url, dest, sha256_url):
+    """Downloads a published version to `dest`. Replaced only if its sha256 matches the one published at
+    `sha256_url` and it is valid Python (or a zip app): your own self-updating code is third-party code for whoever
+    receives it, so the checksum is never optional. Returns (ok, message)."""
     try:
         new = download(url)
-        if sha256_url:
-            want = download(sha256_url).decode().split()[0].lower()
-            if hashlib.sha256(new).hexdigest() != want:
-                return False, "checksum mismatch: not updated"
+        want = download(sha256_url).decode().split()[0].lower()
+        if hashlib.sha256(new).hexdigest() != want:
+            return False, "checksum mismatch: not updated"
         if b"PK\x03\x04" in new[:4096]:  # a zip app (.pyz): must open and have its entry point
             with zipfile.ZipFile(io.BytesIO(new)) as z:
                 z.getinfo("__main__.py")

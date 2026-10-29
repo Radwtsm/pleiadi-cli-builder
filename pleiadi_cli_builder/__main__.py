@@ -18,7 +18,7 @@ def steps():
     return [
         Step("git", lambda: shutil.which("git") is not None, fix="Installa git: https://git-scm.com"),
         Step("cartella di lavoro", lambda: os.path.isdir(os.path.expanduser("~/code")),
-             apply=lambda: os.makedirs(os.path.expanduser("~/code"), exist_ok=True) or True),
+             apply=lambda: os.makedirs(os.path.expanduser("~/code"), exist_ok=True) or True, plan="creo ~/code"),
     ]
 
 
@@ -29,7 +29,8 @@ def setup(screen, args):
     return 0 if run_steps(screen, steps()) else 1
 
 
-@app.command("doctor", help="solo i controlli, non cambia niente", menu="Controlla che sia tutto a posto")
+@app.command("doctor", help="solo i controlli, non cambia niente", menu="Controlla che sia tutto a posto",
+             effects=False)
 def doctor(screen, args):
     screen.header("controlli")
     return 0 if run_steps(screen, steps(), check_only=True) else 1
@@ -57,6 +58,9 @@ def new(screen, args):
     if os.path.exists(path):
         screen.todo(f"Esiste già: {path}")
         return 1
+    if screen.dry:
+        screen.info(f"farei: {path} con i comandi setup e doctor")
+        return 0
     os.makedirs(os.path.dirname(path))
     open(os.path.join(folder, pkg, "__init__.py"), "w").close()
     title = name.replace("-", " ").title()
@@ -73,6 +77,9 @@ def bundle_cmd(screen, args):
     if len(args) != 3:
         screen.todo("Uso: bundle CARTELLA MODULO:FUNZIONE USCITA.pyz")
         return 2
+    if screen.dry:
+        screen.info(f"farei: {args[2]} e {args[2]}.sha256 da {args[0]} ({args[1]})")
+        return 0
     os.makedirs(os.path.dirname(os.path.abspath(args[2])), exist_ok=True)
     digest = bundle(args[0], args[1], args[2])
     screen.section(f"{args[2]} pronto")
@@ -98,7 +105,7 @@ def demo(screen, args):
 
 
 @app.command("intro", args="[TITOLO] [--resta]", help="l'animazione d'apertura (un tasto la salta)",
-             menu="Guarda l'intro")
+             menu="Guarda l'intro", effects=False)
 def intro(screen, args):
     hold = "--resta" in args
     words = [a for a in args if not a.startswith("--")]

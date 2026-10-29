@@ -12,12 +12,12 @@ TEXTS = {
            "recommended": "(consigliata)", "type_number": "Scrivi il numero e premi Invio:", "yes": "Sì", "no": "No",
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
-           "minutes": "min", "timeout": "tempo scaduto"},
+           "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
-           "minutes": "min", "timeout": "timed out"},
+           "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)"},
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
@@ -123,7 +123,7 @@ class Screen:
                 self.colors = False
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
-        self.results, self.no_input = [], False
+        self.results, self.no_input, self.dry, self.read_only = [], False, False, False
         self.head, self.body, self.foot, self.last = [], [], "", []
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
 
@@ -289,7 +289,9 @@ class Screen:
         """Show a Result (✓ / ✗ with what to do) and, if it has `retry`, offer to retry on the spot (max 3)."""
         self.results.append(r)
         th = self.theme
-        if r.skipped:
+        if r.planned:
+            self.out(self._indent() + self.acc("○") + f" {r.name}" + self.dim(f" · {self.t['would']}: {r.note}"))
+        elif r.skipped:
             self.out(self._indent() + self.dim(f"✓ {r.name}" + (f" · {r.note}" if r.note else "")))
         elif r.ok:
             self.out(self._indent() + self.c(th.ok, "✓") + f" {r.name}" + (self.dim(f" · {r.note}") if r.note else ""))
@@ -314,13 +316,16 @@ class Screen:
     def summary(self, minutes=None):
         """The closing box: n/total ok and what is still ✗; it stays on screen after exit."""
         good = [r for r in self.results if r.ok or r.skipped]
+        planned = [r for r in self.results if r.planned]
         everything = len(good) == len(self.results)
         th = self.theme
         lines = [(self.c(th.ok, "✓ ") if everything else self.acc(th.mark + " "))
                  + self.bold(self.t["ok_count"].format(ok=len(good), tot=len(self.results)))
                  + (self.dim(f" · {minutes} {self.t['minutes']}") if minutes is not None else "")]
-        lines += ["  " + self.c(th.error, "✗") + f" {r.name}" for r in self.results if not (r.ok or r.skipped)]
-        if not everything:
+        lines += ["  " + self.c(th.error, "✗") + f" {r.name}" for r in self.results if not (r.ok or r.skipped or r.planned)]
+        if planned:
+            lines.append("  " + self.acc("○ ") + self.t["planned"].format(n=len(planned)))
+        elif not everything:
             lines.append(self.dim("  " + self.t["rerun"].format(name=self.name)))
         self.box(lines)
         self.last = self.frame(lines)
