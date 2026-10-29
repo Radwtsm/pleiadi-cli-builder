@@ -13,13 +13,13 @@ TEXTS = {
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
            "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)",
-           "empty": "niente da mostrare", "rows": "{n} righe"},
+           "empty": "niente da mostrare", "rows": "{n} righe", "row": "1 riga"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
            "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)",
-           "empty": "nothing to show", "rows": "{n} rows"},
+           "empty": "nothing to show", "rows": "{n} rows", "row": "1 row"},
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
@@ -323,7 +323,14 @@ class Screen:
         self.out("    " + self.bold(line(head)))
         for b in body:
             self.out("    " + line(b))
-        self.out("    " + self.dim(self.t["rows"].format(n=len(rows))))
+        self.out("    " + self.dim(self.t["row"] if len(rows) == 1 else self.t["rows"].format(n=len(rows))))
+
+    def data(self, obj):
+        """With --json: `obj` (any JSON value) to stdout and True; otherwise nothing and False — for commands whose
+        data isn't one table."""
+        if self.json:
+            print(mask(json.dumps(obj, ensure_ascii=False, indent=1)))
+        return self.json
 
     def secret_input(self, question):
         """A hidden answer (a token, a password): never shown, never kept on screen."""

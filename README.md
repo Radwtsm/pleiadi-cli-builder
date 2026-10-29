@@ -121,6 +121,8 @@ def aperte(screen, args):
 
 `team-kit aperte web` mostra la tabella, `team-kit aperte web --json | jq …` passa i dati a un altro programma.
 
+Un esempio completo: [`examples/pm-kit`](examples/pm-kit) — i progetti in lavorazione su Redmine, per i PM.
+
 ## Regole del design
 
 - Le funzioni non stampano: restituiscono valori e `Result`; stampa solo lo `Screen`. Così la stessa logica
@@ -142,7 +144,7 @@ Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i m
 ## Test
 
 ```bash
-for t in tests/test_*.py; do python3 "$t" || break; done
+for t in tests/test_*.py examples/*/tests/test_*.py; do python3 "$t" || break; done
 ```
 
 Pre-commit (test + gitleaks se c'è): `git config core.hooksPath .githooks`.
