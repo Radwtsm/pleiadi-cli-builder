@@ -12,8 +12,8 @@ Configurazione (dato, JSON): $PM_KIT_CONFIG oppure ~/.config/pm-kit/config.json
 La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file."""
 import datetime, os, urllib.error
 
-from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, credentials, pin_step, run, run_steps, secret,
-                                 temporary, write_json)
+from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, credentials, pin_step, read_json, run, run_steps,
+                                 secret, temporary, write_json)
 from pm_kit import redmine
 
 app = App("pm-kit", title="PM kit", accent="#4a6cf7", menu_subtitle="i progetti in lavorazione")
@@ -121,9 +121,10 @@ def mie(screen, args):
     data, when = mine(screen)
     if data is None:
         return failed(screen, when, [])
-    screen.table(redmine.my_tasks(data), ["id", "progetto", "titolo", "stato", "scadenza", "fatto"])
+    rows = redmine.my_tasks(data)
+    i = screen.table(rows, ["id", "progetto", "titolo", "stato", "scadenza", "fatto"], pick=True)
     screen.info(screen.dim(app.snapshot_note(when)))
-    return 0
+    return issue_cmd(screen, [str(rows[i]["id"])]) if i is not None else 0
 
 
 @app.command("task", args="[--progetto ID] [--stato aperte|chiuse|tutte] [--persona me|ID] [--scadenza GIORNI] [--testo PAROLA]",
@@ -143,9 +144,33 @@ def task_cmd(screen, args):
             found, cut = redmine.search(client(cfg, token), query)
     except ERRORS as e:
         return failed(screen, why(e), [])
-    screen.table(found, ["id", "progetto", "titolo", "stato", "persona", "scadenza", "fatto"])
     if cut:
         screen.todo("Mostro le prime 200: restringi con --progetto, --stato o --testo.")
+    i = screen.table(found, ["id", "progetto", "titolo", "stato", "persona", "scadenza", "fatto"], pick=True)
+    return issue_cmd(screen, [str(found[i]["id"])]) if i is not None else 0
+
+
+@app.command("issue", args="NUMERO", help="una task nel dettaglio: campi, descrizione, note, relazioni, allegati",
+             menu=None, effects=False, json=True, example=["101"])
+def issue_cmd(screen, args):
+    if not args or not args[0].lstrip("#").isdigit():
+        failed(screen, "Uso: pm-kit issue NUMERO", {})
+        return 2
+    number = args[0].lstrip("#")
+    cfg, token = connect(screen)
+    if not cfg:
+        return failed(screen, token, {})
+    me = (app._memory.get("mie") or read_json(os.path.join(app.cache_dir, "mie.json")) or {}).get("data", {}).get("user")
+    try:
+        with vpn(cfg, screen), screen.wait(f"apro la task {number}"):
+            api = client(cfg, token)
+            issue, statuses = redmine.fetch_issue(api, number)
+            me = me or (api.get("/users/current.json") or {}).get("user")
+    except HTTPError as e:
+        return failed(screen, f"Task {number} non trovata (o non visibile per te)" if e.status == 404 else why(e), {})
+    except ERRORS as e:
+        return failed(screen, why(e), {})
+    screen.detail(redmine.issue_detail(issue, me, datetime.date.today(), statuses))
     return 0
 
 

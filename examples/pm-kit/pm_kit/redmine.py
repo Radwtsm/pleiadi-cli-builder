@@ -123,3 +123,117 @@ def my_tasks(data):
     me = (data.get("user") or {}).get("id")
     mine = [i for i in data.get("open", []) if (i.get("assigned_to") or {}).get("id") == me]
     return [task(i) for i in sorted(mine, key=lambda i: (i.get("due_date") or "9999", i["id"]))]
+
+
+# ── one issue in detail ──
+URGENT, HIGH = {"urgente", "immediata", "urgent", "immediate"}, {"alta", "high"}
+RELATIONS = {"relates": "collegata a", "duplicates": "duplica", "duplicated": "duplicata da", "blocks": "blocca",
+             "blocked": "bloccata da", "precedes": "precede", "follows": "segue", "copied_to": "copiata in",
+             "copied_from": "copiata da"}
+
+
+def fetch_issue(client, number):
+    """(issue with notes, attachments, relations and sub-tasks; {status id: name}) — standard REST API."""
+    issue = client.get(f"/issues/{number}.json", {"include": "journals,attachments,relations,children"})["issue"]
+    try:
+        statuses = {s["id"]: s["name"] for s in client.get("/issue_statuses.json").get("issue_statuses", [])}
+    except Exception:  # only used to name status changes: ids are fine without it
+        statuses = {}
+    return issue, statuses
+
+
+def readable(text):
+    """Redmine text (Textile or Markdown) as plain readable lines [(line, tone)]: headings ▌, lists •, code │,
+    links «text (url)», emphasis markers dropped."""
+    import re
+    text = (text or "").replace("\r\n", "\n")
+    textile = bool(re.search(r'^h[1-6]\.\s|"[^"]+":https?://|<pre>', text, re.M))
+    out, code = [], False
+    for line in text.split("\n"):
+        s = line.rstrip()
+        if s.strip() in ("<pre>", "</pre>", "```") or s.strip().startswith("```") or s.strip().startswith("<pre"):
+            code = not code if not s.strip().startswith("</") else False
+            continue
+        if code:
+            out.append(("  │ " + s, "dim"))
+            continue
+        m = re.match(r"h[1-6]\.\s+(.*)", s) if textile else re.match(r"#{1,6}\s+(.*)", s)
+        if m:
+            out.append(("▌ " + m.group(1).strip(), None))
+            continue
+        m = re.match(r"(\*+|#+)\s+(.*)", s) if textile else re.match(r"(\s*)[-*+]\s+(.*)", s)
+        if m:
+            depth = len(m.group(1)) - 1 if textile else len(m.group(1)) // 2
+            s = "  " * depth + ("• " if not textile or m.group(1)[0] == "*" else "– ") + m.group(2)
+        s = re.sub(r'"([^"]+)":(\S+)', r"\1 (\2)", s)
+        s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", s)
+        s = re.sub(r"\*\*(.+?)\*\*", r"\1", s)
+        s = re.sub(r"(?<![\w*])\*(\S(?:.*?\S)?)\*(?![\w*])", r"\1", s) if textile else s
+        s = re.sub(r"@([^@\s][^@]*)@", r"\1", s) if textile else re.sub(r"`([^`]+)`", r"\1", s)
+        if s or (out and out[-1][0]):
+            out.append((s, None))
+    while out and not out[-1][0]:
+        out.pop()
+    return out
+
+
+def _size(n):
+    return f"{n / 1048576:.1f} MB" if n >= 1048576 else f"{round(n / 1024)} KB"
+
+
+def issue_detail(issue, me, today, statuses=None):
+    """A Detail for one issue: key fields with meaning colors (late, urgent, mine, still, mentions me), the
+    description, notes and changes most recent first (older ones folded), relations and sub-tasks, attachments."""
+    from pleiadi_cli_builder import Detail
+    statuses, me = statuses or {}, me or {}
+    is_open = not (issue.get("status") or {}).get("is_closed", False)
+    due, prio = issue.get("due_date") or "", (issue.get("priority") or {}).get("name", "")
+    soon = (today + datetime.timedelta(days=3)).isoformat()
+    still = (today - datetime.date.fromisoformat(_day(issue.get("updated_on")) or today.isoformat())).days
+    who = issue.get("assigned_to") or {}
+    fields = [("stato", (issue.get("status") or {}).get("name", ""), None),
+              ("priorità", prio, "alarm" if prio.lower() in URGENT else "warn" if prio.lower() in HIGH else None),
+              ("assegnata", who.get("name", "—"), "ok" if who.get("id") and who.get("id") == me.get("id") else None),
+              ("scadenza", due or "—", ("alarm" if due < today.isoformat() else "warn" if due <= soon else None)
+               if due and is_open else None),
+              ("fatto", f"{issue.get('done_ratio') or 0}%", None)]
+    if issue.get("fixed_version"):
+        fields.append(("versione", issue["fixed_version"].get("name", ""), None))
+    fields += [("autore", (issue.get("author") or {}).get("name", ""), None),
+               ("creata", _day(issue.get("created_on")), "dim"),
+               ("aggiornata", _day(issue.get("updated_on")) + (f" · ferma da {still} giorni" if is_open and still > 14 else ""),
+                "warn" if is_open and still > 14 else None)]
+    names = [f"@{me['login']}"] if me.get("login") else []
+    if me.get("firstname"):
+        names.append(f"{me['firstname']} {me.get('lastname', '')}".strip())
+    sections = [("Descrizione", readable(issue.get("description")) or [("—", "dim")])]
+    shown = 0
+    for j in reversed(issue.get("journals") or []):
+        items = [(t, "warn" if any(n.lower() in (j.get("notes") or "").lower() for n in names) else tone)
+                 for t, tone in readable(j.get("notes"))]
+        for d in j.get("details") or []:
+            old, new = d.get("old_value"), d.get("new_value")
+            if d.get("name") == "status_id":
+                name = lambda v: statuses.get(int(v), v) if v and str(v).isdigit() else v
+                items.append((f"stato: {name(old)} → {name(new)}", None))
+            elif d.get("name") == "done_ratio":
+                items.append((f"fatto: {old or 0}% → {new or 0}%", None))
+            elif d.get("name") == "assigned_to_id":
+                items.append(("assegnatario cambiato", None))
+            else:
+                items.append((f"{d.get('name')}: {old or '—'} → {new or '—'}", "dim"))
+        if items:
+            sections.append((f"Nota · {_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", items, shown >= 3))
+            shown += 1
+    rel = [(f"{RELATIONS.get(r.get('relation_type'), r.get('relation_type'))} "
+            f"#{r['issue_to_id'] if r.get('issue_id') == issue['id'] else r.get('issue_id')}", None)
+           for r in issue.get("relations") or []]
+    rel += [(f"sotto-task #{c['id']} {c.get('subject', '')}", None) for c in issue.get("children") or []]
+    if rel:
+        sections.append(("Relazioni e sotto-task", rel))
+    if issue.get("attachments"):
+        sections.append(("Allegati", [(f"{a.get('filename')} · {_size(a.get('filesize') or 0)}", None)
+                                      for a in issue["attachments"]]))
+    return Detail(f"#{issue['id']} · {issue.get('subject', '')} · {(issue.get('project') or {}).get('name', '')}",
+                  fields, sections, legend={"alarm": "in ritardo o urgente", "warn": "attenzione (vicina, ferma, ti cita)",
+                                            "ok": "assegnata a te"})

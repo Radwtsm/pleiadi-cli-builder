@@ -12,6 +12,7 @@ un'istantanea dei dati (`--aggiorna` per riscaricarla), tabella o `--json`.
 | `pm-kit task --progetto ID --stato aperte\|chiuse\|tutte --persona me\|ID --scadenza GIORNI --testo PAROLA` | una ricerca filtrata sul server (al massimo 200 risultati) |
 | `pm-kit progetti --tutti` | per chi segue i progetti: ogni progetto attivo con aperte, in ritardo, chiuse in 7 giorni, avanzamento, ultima attività; scarica tutto, quindi vuole `--tutti`, `"ruolo": "pm"` o una conferma nel menu |
 | `pm-kit stato PROGETTO --tutti` | per stato, per persona, in ritardo, scadenze dei prossimi 14 giorni |
+| `pm-kit issue N` | una task nel dettaglio: stato, priorità, assegnatario, scadenza, avanzamento, versione, autore, date (in rosso ritardo e urgenza, in giallo scadenza vicina, ferma da più di 14 giorni o ti cita, in verde se è tua); descrizione leggibile, note e cambi di stato dalle più recenti, relazioni e sotto-task, allegati. Da `mie` e `task` si apre anche con Invio sulla riga |
 | `pm-kit copia si\|no\|cancella` | la copia locale dei dati: attiva, disattiva, cancella |
 
 Configurazione (`~/.config/pm-kit/config.json`, o il percorso in `PM_KIT_CONFIG`): `url` e `user`; se serve

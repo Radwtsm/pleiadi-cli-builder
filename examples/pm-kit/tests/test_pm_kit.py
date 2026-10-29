@@ -31,6 +31,21 @@ ISSUES = [  # (project, status, assignee, due, done, closed_on)
 ]
 
 
+DETAIL = {"issue": dict(ISSUES[0], priority={"name": "Urgente"}, author=U(8, "Bruno Test"),
+                         fixed_version={"name": "1.0"}, created_on=D(-40) + "T09:00:00Z", updated_on=D(-20) + "T09:00:00Z",
+                         description='h2. Obiettivo\n\n* home veloce\n* menu chiaro\n\nVedi "la bozza":https://example.test/bozza\n'
+                                     '<pre>\nnpm run build\n</pre>',
+                         journals=[{"id": 1, "user": U(8, "Bruno Test"), "created_on": D(-30) + "T09:00:00Z",
+                                    "notes": "", "details": [{"property": "attr", "name": "status_id", "old_value": "1",
+                                                              "new_value": "2"}]},
+                                   {"id": 2, "user": U(8, "Bruno Test"), "created_on": D(-21) + "T09:00:00Z",
+                                    "notes": "@anna puoi guardare il menu?", "details": []}],
+                         attachments=[{"filename": "bozza.png", "filesize": 123456}],
+                         relations=[{"relation_type": "blocks", "issue_id": 101, "issue_to_id": 102}],
+                         children=[{"id": 105, "subject": "Icone"}])}
+STATUSES = {"issue_statuses": [{"id": 1, "name": "Nuova"}, {"id": 2, "name": "In corso"}]}
+
+
 class FakeRedmine(http.server.BaseHTTPRequestHandler):
     down = False  # True: every request fails (proves a run used the snapshot)
     paths = []  # every request path (proves what a command did NOT download)
@@ -52,6 +67,13 @@ class FakeRedmine(http.server.BaseHTTPRequestHandler):
         FakeRedmine.paths.append(self.path.split("?")[0])
         url = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+        if url.path == "/issues/101.json":
+            self.assertion = q.get("include", "")
+            return self.send(200, DETAIL) if "journals" in q.get("include", "") else self.send(400)
+        if url.path == "/issue_statuses.json":
+            return self.send(200, STATUSES)
+        if url.path.startswith("/issues/") and url.path.endswith(".json"):
+            return self.send(404)
         if url.path == "/users/current.json":
             return self.send(200, {"user": {"id": 7, "login": "anna", "firstname": "Anna", "lastname": "Prova"}})
         if url.path == "/projects.json":
@@ -107,6 +129,34 @@ class Calculations(unittest.TestCase):
         self.assertEqual([t["id"] for t in st["prossime_scadenze"]], [102])
         with self.assertRaises(KeyError):
             redmine.project_status("nessuno", PROJECTS, [], TODAY)
+
+
+class IssueView(unittest.TestCase):
+    def test_readable_text(self):
+        lines = [t for t, _ in redmine.readable(DETAIL["issue"]["description"])]
+        self.assertIn("▌ Obiettivo", lines)
+        self.assertIn("• home veloce", lines)
+        self.assertIn("Vedi la bozza (https://example.test/bozza)", lines)
+        self.assertIn("  │ npm run build", lines)
+        md = [t for t, _ in redmine.readable("## Titolo\n- uno\n[doc](https://example.test/d) e **forte**\n```\ncodice\n```")]
+        self.assertEqual(md, ["▌ Titolo", "• uno", "doc (https://example.test/d) e forte", "  │ codice"])
+
+    def test_detail_highlights(self):
+        d = redmine.issue_detail(DETAIL["issue"], {"id": 7, "login": "anna", "firstname": "Anna", "lastname": "Prova"},
+                                 TODAY, {1: "Nuova", 2: "In corso"})
+        tones = {label: tone for label, _, tone in d.fields}
+        self.assertEqual(tones["scadenza"], "alarm")  # 3 days late
+        self.assertEqual(tones["priorità"], "alarm")
+        self.assertEqual(tones["assegnata"], "ok")  # to me
+        self.assertEqual(tones["aggiornata"], "warn")  # still for 20 days
+        titles = [t for t, _, _ in d.sections]
+        self.assertEqual(titles[0], "Descrizione")
+        notes = [s for s in d.sections if s[0].startswith("Nota")]
+        self.assertTrue(notes[0][0].endswith("Bruno Test") and D(-21) in notes[0][0])  # most recent first
+        self.assertEqual(notes[0][1][0][1], "warn")  # mentions me
+        self.assertIn(("stato: Nuova → In corso", None), notes[1][1])
+        self.assertIn("Relazioni e sotto-task", titles)
+        self.assertIn(("bozza.png · 121 KB", None), dict((t, i) for t, i, _ in d.sections)["Allegati"])
 
 
 class Commands(unittest.TestCase):
@@ -191,6 +241,17 @@ class Commands(unittest.TestCase):
         code, out, err = quiet(lambda: app.main(["progetti", "--tutti", "--aggiorna"]))
         self.assertIn("al massimo ogni", " ".join(out.split()))
         self.assertEqual(FakeRedmine.paths, [])
+
+    def test_issue_command(self):
+        code, out, err = quiet(lambda: app.main(["issue", "101", "--json"]))
+        self.assertEqual(code, 0, err)
+        d = json.loads(out)
+        self.assertEqual(d["fields"]["stato"], "In corso")
+        self.assertIn("Allegati", d["sections"])
+        code, out, err = quiet(lambda: app.main(["issue", "999"]))
+        self.assertEqual(code, 1)
+        code, out, err = quiet(lambda: app.main(["issue", "abc"]))
+        self.assertEqual(code, 2)
 
     def set_config(self, **kv):
         cfg = os.environ["PM_KIT_CONFIG"]

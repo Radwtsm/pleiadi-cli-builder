@@ -15,7 +15,8 @@ TEXTS = {
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
            "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)",
-           "empty": "niente da mostrare", "rows": "{n} righe", "row": "1 riga"},
+           "empty": "niente da mostrare", "rows": "{n} righe", "row": "1 riga", "open_q": "Quale apro?",
+           "back": "Indietro", "not_found": "non trovato (un tasto per continuare)"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home End · / search · n next · Space fold · q close",
@@ -23,7 +24,8 @@ TEXTS = {
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
            "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)",
-           "empty": "nothing to show", "rows": "{n} rows", "row": "1 row"},
+           "empty": "nothing to show", "rows": "{n} rows", "row": "1 row", "open_q": "Which one?",
+           "back": "Back", "not_found": "not found (any key to go on)"},
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
@@ -71,7 +73,9 @@ def key():
         import msvcrt
         k = msvcrt.getwch()
         if k in ("\x00", "\xe0"):
-            return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
+            return {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home", "O": "end"}.get(msvcrt.getwch(), "")
+        if k == "\x1b":
+            return "esc"
     else:
         import termios, tty
         fd = sys.stdin.fileno()
@@ -80,13 +84,21 @@ def key():
             tty.setcbreak(fd)
             b = os.read(fd, 1)
             if b == b"\x1b":
+                import select
+                if not select.select([fd], [], [], 0.05)[0]:
+                    return "esc"  # Esc alone
                 b += os.read(fd, 2)
+                if b[2:3].isdigit():  # \x1b[5~ PgUp, \x1b[6~ PgDn, \x1b[1~ Home, \x1b[4~ End
+                    while not b.endswith(b"~") and len(b) < 8:
+                        b += os.read(fd, 1)
             elif b and b[0] >= 0xC0:  # an accented letter is several bytes (UTF-8)
                 b += os.read(fd, 1 if b[0] < 0xE0 else 2 if b[0] < 0xF0 else 3)
             k = b.decode(errors="ignore")
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, before)
-        k = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down"}.get(k, k)
+        k = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down", "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
+             "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[F": "end", "\x1bOF": "end",
+             "\x1b[4~": "end"}.get(k, k)
     if k == "\x03":
         raise KeyboardInterrupt
     if k in ("\x7f", "\x08"):
@@ -311,10 +323,11 @@ class Screen:
             for x in lines[1:]:
                 self.out("      " + x)
 
-    def table(self, rows, columns=None, titles=None):
+    def table(self, rows, columns=None, titles=None, pick=False):
         """rows = [dict]; columns = keys to show (default: those of the first row); titles = {key: header}.
         With --json (screen.json) the rows go to stdout as JSON, for other programs; otherwise a table that fits the
-        window: the widest column is cut first."""
+        window: the widest column is cut first. pick=True in a real terminal: then the rows can be chosen with the
+        arrows and Enter opens one — returns its index (None: «Indietro», or no terminal)."""
         columns = columns or (list(rows[0]) if rows else [])
         if self.json:
             print(mask(json.dumps([{k: r.get(k) for k in columns} for r in rows], ensure_ascii=False, indent=1)))
@@ -336,6 +349,68 @@ class Screen:
         for b in body:
             self.out("    " + line(b))
         self.out("    " + self.dim(self.t["row"] if len(rows) == 1 else self.t["rows"].format(n=len(rows))))
+        if pick and self.full and self.interactive:
+            i = self.choose(self.t["open_q"], [line(b) for b in body] + [self.t["back"]])
+            return i if i < len(rows) else None
+        return None
+
+    def detail(self, d):
+        """A Detail (pleiadi_cli_builder.detail): JSON with --json, plain text without a real terminal, otherwise
+        the scrolling view until q/Esc/Enter."""
+        from .detail import Pager
+        if self.data(d.as_dict()):
+            return
+        size = shutil.get_terminal_size((80, 24))
+        pager = Pager(d, min(size.columns - 1, 100) if not self.full else size.columns, size.lines - 2, self.c)
+        if not (self.full and self.interactive):
+            for l in pager.plain():
+                self.out(l)
+            return
+        self.open()
+        saved, self.mode = (self.head, self.body), "read"
+        try:
+            while True:
+                size = shutil.get_terminal_size((80, 24))
+                pager.resize(size.columns, size.lines - 2)  # rewraps when the window changes
+                with self.lock:
+                    self.head, self.body = [], pager.render()
+                self.draw()
+                what = pager.handle(key())
+                if what == "quit":
+                    break
+                if what == "search":
+                    self.mode = "type"
+                    q = self._type_line("/")
+                    self.mode = "read"
+                    if q and not pager.search(q):
+                        self.foot = self.dim(f"  «{q}»: {self.t['not_found']}")
+                        self.draw()
+                        key()
+                        self.foot = ""
+        finally:
+            with self.lock:
+                self.head, self.body = saved
+            self.mode = "idle"
+            self.draw()
+
+    def _type_line(self, prompt):
+        """A short answer typed in the bottom line (the search of the detail view)."""
+        text = ""
+        sys.stdout.write("\033[?25h")
+        try:
+            while True:
+                self.foot = "  " + self.acc(prompt) + text
+                self.draw()
+                k = key()
+                if k in ("enter", "esc"):
+                    return text if k == "enter" else ""
+                if k == "backspace":
+                    text = text[:-1]
+                elif len(k) == 1 and k.isprintable():
+                    text += k
+        finally:
+            self.foot = ""
+            sys.stdout.write("\033[?25l")
 
     def data(self, obj):
         """With --json: `obj` (any JSON value) to stdout and True; otherwise nothing and False — for commands whose
