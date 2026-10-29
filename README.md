@@ -147,7 +147,7 @@ Un esempio completo: [`examples/pm-kit`](examples/pm-kit) — i progetti in lavo
 
 Non incluso (per ora): un terminale con Claude dentro il tool.
 
-Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i mezzi blocchi (più leggero).
+Variabili per l'intro: `PCB_COLORS=256|24` forza i colori; di base i pixel sono mezzi blocchi (▀▄, in ogni font), `PCB_PIXEL=4` usa i quadranti (più fini, ma servono un font che li abbia e righe senza spazi).
 
 ## Test
 

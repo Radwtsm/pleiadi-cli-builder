@@ -1,7 +1,7 @@
 """The intro: full screen on solid black (the same in every terminal, even with a light background): rises from
 black, a flight through stars, a constellation, two 3D shapes that turn (and morph into each other while it
-stays), the title in pixel letters with a glint, the tagline and the lines under it. Pixels = quarter cells
-(▘▝▖▗) or half cells (▀/▄); truecolor or 256 colors; a key speeds it to the end (never a jump)."""
+stays), the title in pixel letters with a glint, the tagline and the lines under it. Pixels = half cells
+(▀/▄), or quarter cells (▘▝▖▗) with PCB_PIXEL=4; truecolor or 256 colors; a key speeds it to the end (never a jump)."""
 import math, os, platform, random, re, shutil, sys, time
 
 from .term import MAC, WIN
@@ -136,10 +136,15 @@ def point_cloud(name, n):
     return pts
 
 
+SYNC_ON, SYNC_OFF = "\033[?2026h", "\033[?2026l"  # synchronized output: a frame appears whole (ignored where unknown)
+
+
 def truecolor():
     force = os.environ.get("PCB_COLORS", "")
     if force in ("24", "256"):
         return force == "24"
+    if WIN and not os.environ.get("WT_SESSION"):
+        return False  # the classic Windows console: 256 colors are the safe choice
     tp = os.environ.get("TERM_PROGRAM", "")
     return (os.environ.get("COLORTERM", "") in ("truecolor", "24bit") or bool(os.environ.get("WT_SESSION"))
             or tp in ("iTerm.app", "WezTerm", "ghostty", "vscode")
@@ -458,7 +463,9 @@ def play(scene, duration=3.2, hold=False, fade=False, screensaver=False):
         return 0
     if WIN:
         os.system("")  # ANSI sequences in the Windows console
-    rd = Renderer(scene, cols, rows, quarter=os.environ.get("PCB_PIXEL") != "2", true_color=truecolor(),
+    # half blocks (▀▄) by default: square pixels and in every font; quadrants (▘▝▖▗) only when asked — many
+    # terminal fonts lack them or leave gaps between rows, and they show vertical stripes (owner 29/10: «tutta rotta»)
+    rd = Renderer(scene, cols, rows, quarter=os.environ.get("PCB_PIXEL") == "4", true_color=truecolor(),
                   duration=duration)
     pressed, saved = (lambda: False), None
     if WIN:
@@ -482,7 +489,7 @@ def play(scene, duration=3.2, hold=False, fade=False, screensaver=False):
                 fast = (min(1.0, (start - t0) / duration), start)  # a key: to the end in 0.35 s, no jump
             t = (min(1.0, (start - t0) / duration) if fast is None else
                  min(1.0, fast[0] + (1 - fast[0]) * (start - fast[1]) / 0.35))
-            sys.stdout.write(rd.cells(rd.frame(t), t))
+            sys.stdout.write(SYNC_ON + rd.cells(rd.frame(t), t) + SYNC_OFF)
             sys.stdout.flush()
             if t >= 1.0:
                 break
@@ -494,7 +501,7 @@ def play(scene, duration=3.2, hold=False, fade=False, screensaver=False):
             buf = rd.frame(1.0, spin)
             if light < 1:
                 buf = [[[v * light for v in p] for p in row] for row in buf]
-            sys.stdout.write(rd.cells(buf, 1.0, light))
+            sys.stdout.write(SYNC_ON + rd.cells(buf, 1.0, light) + SYNC_OFF)
             sys.stdout.flush()
             time.sleep(0.06)
         if fade:  # dissolves to black (0.4 s), then a clean screen for what comes next
@@ -502,7 +509,7 @@ def play(scene, duration=3.2, hold=False, fade=False, screensaver=False):
             while (k := (time.time() - start) / 0.4) < 1:
                 light = (1 - k) ** 2
                 buf = [[[v * light for v in p] for p in row] for row in rd.frame(1.0, spin + k * 0.4)]
-                sys.stdout.write(rd.cells(buf, 1.0, light))
+                sys.stdout.write(SYNC_ON + rd.cells(buf, 1.0, light) + SYNC_OFF)
                 sys.stdout.flush()
                 time.sleep(0.03)
             sys.stdout.write(black + "\033[2J\033[H")
