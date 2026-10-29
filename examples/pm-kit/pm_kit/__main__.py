@@ -137,7 +137,7 @@ def failed(screen, reason, empty):
 
 
 @app.command("mie", help="le task aperte assegnate a te (scarica solo quelle)", menu="Le mie task", effects=False,
-             json=True)
+             json=True, key="m")
 def mie(screen, args):
     data, when = mine(screen)
     if data is None:
@@ -283,7 +283,7 @@ def issue_cmd(screen, args):
 
 
 @app.command("progetti", args="[--tutti]", help="tutti i progetti attivi, i più a rischio prima (per chi li segue: "
-             "scarica tutto)", menu="Tutti i progetti (per chi li segue)", effects=False, json=True)
+             "scarica tutto)", menu="Tutti i progetti (per chi li segue)", effects=False, json=True, key="p")
 def progetti(screen, args):
     data, when = everything(screen, args)
     if data is None:
@@ -428,14 +428,14 @@ def copia(screen, args):
     return 0
 
 
-@app.command("setup", help="configurazione e chiave API, una volta (si può rilanciare)", menu="Prepara pm-kit")
+@app.command("setup", help="configurazione e chiave API, una volta (si può rilanciare)", menu="Prepara pm-kit", key="s")
 def setup(screen, args):
     screen.header("preparazione")
     return 0 if run_steps(screen, steps(screen)) else 1
 
 
 @app.command("doctor", help="controlla configurazione, chiave e collegamento", menu="Controlla che sia tutto a posto",
-             effects=False)
+             effects=False, key="c")
 def doctor(screen, args):
     screen.header("controlli")
     return 0 if run_steps(screen, steps(screen), check_only=True) else 1

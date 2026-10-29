@@ -4,7 +4,7 @@ import os, sys, unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["PCB_GLYPHS"] = "full"  # the tests compare symbols: the same set in every terminal
-sys.path.insert(0, ROOT)
+sys.path[:0] = [ROOT, os.path.dirname(os.path.abspath(__file__))]  # test_09 too, even with python -I
 from pleiadi_cli_builder import Theme, term
 from pleiadi_cli_builder.detail import Pager
 from test_09 import detail

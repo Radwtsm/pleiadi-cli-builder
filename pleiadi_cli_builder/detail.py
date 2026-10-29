@@ -125,10 +125,13 @@ class Pager:
         after = [n for n, h in enumerate(self.heads) if h >= self.top]
         self.cur = after[0] if after else len(self.heads) - 1
 
+    def nav(self):
+        """The generic keys (the record's own operations are shown apart, highlighted: Screen.shortcut_line)."""
+        return "↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · n successiva · q chiudi"
+
     def hint(self):
-        keys = "↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · n successiva"
         acts = " · ".join(f"{k} {label}" for k, (label, _) in self.d.actions.items())
-        return keys + (f" · {acts}" if acts else "") + " · q chiudi"
+        return (acts + " · " if acts else "") + self.nav()
 
     def search(self, query):
         """Jumps to the first line with `query` (any case), opening the folded sections where it is. Returns the

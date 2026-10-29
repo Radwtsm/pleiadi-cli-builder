@@ -17,7 +17,7 @@ TEXTS = {
            "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)",
            "empty": "niente da mostrare", "rows": "{n} righe", "row": "1 riga", "open_q": "Quale apro?",
            "back": "Indietro", "not_found": "non trovato (un tasto per continuare)",
-           "hint_board": "↑↓ muovi · Spazio spunta · a tutte{actions} · Invio fatto · q esci",
+           "hint_board": "↑↓ muovi · Spazio spunta · a tutte · Invio fatto · q esci",
            "checked": "{n} di {tot} spuntate"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
@@ -28,7 +28,7 @@ TEXTS = {
            "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)",
            "empty": "nothing to show", "rows": "{n} rows", "row": "1 row", "open_q": "Which one?",
            "back": "Back", "not_found": "not found (any key to go on)",
-           "hint_board": "↑↓ move · Space check · a all{actions} · Enter done · q quit",
+           "hint_board": "↑↓ move · Space check · a all · Enter done · q quit",
            "checked": "{n} of {tot} checked"},
 }
 
@@ -44,12 +44,14 @@ class Theme:
                 corners="┌┐└┘")
 
     def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1", glyphs=None, warn="33",
-                 select="48;5;237", **marks):
+                 select="48;5;237", shortcut=None, **marks):
         """glyphs = "full" or "safe"; default: safe in the classic Windows console (no Windows Terminal),
         PCB_GLYPHS=safe|full to choose. marks = any of spinner, mark, step, attach, arrow, prompt, yes, no, corners."""
         # roles, like Claude Code: one accent for what is interactive or selected; dim for what is secondary
-        # (borders, hints, notes); ok/warn/error only for a meaning; select = the background of the selected row
+        # (borders, hints, notes); ok/warn/error only for a meaning; select = the background of the selected row;
+        # shortcut = the keys of this screen's own operations, a chip in the accent (the generic keys are plain accent)
         self.accent, self.ok, self.error, self.dim, self.bold = accent, ok, error, dim, bold
+        self.shortcut = shortcut or f"1;7;{accent}"
         self.warn, self.select = warn, select
         glyphs = glyphs or os.environ.get("PCB_GLYPHS") or ("safe" if WIN and not os.environ.get("WT_SESSION") else "full")
         for k, v in {**(self.SAFE if glyphs == "safe" else self.FULL), **marks}.items():
@@ -207,12 +209,21 @@ class Screen:
             except (OSError, AttributeError):
                 self.colors = False
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
-        self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
+        self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.suspended = False
         self.head, self.body, self.foot, self.last = [], [], "", []
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
+
+    @property
+    def full(self):
+        """Full screen: never with --json, even when a tool sets screen.json itself (stdout is only for the data)."""
+        return self._full and not self.json
+
+    @full.setter
+    def full(self, on):
+        self._full = on
 
     # ── the screen ──
     def open(self):
@@ -315,11 +326,18 @@ class Screen:
         st = status_line()
         return h + (f" · {st}" if st else "")
 
-    def keys(self, items):
-        """[(keys, what they do)] → «↑↓ scegli · Invio conferma»: keys in the accent, bold; what they do, muted."""
+    def keys(self, items, context=False):
+        """[(keys, what they do)] → «↑↓ scegli · Invio conferma»: keys in the accent, bold; what they do, muted.
+        context=True: the keys of this screen's own operations, each a chip (theme.shortcut) so they stand out."""
         sep = self.dim(" · ")
-        return sep.join((self.c(f"{self.theme.accent};1", k) if k else "") + self.dim((" " if k else "") + label)
-                        for k, label in items)
+        key = (lambda k: self.c(self.theme.shortcut, f" {k} ")) if context else (lambda k: self.c(f"{self.theme.accent};1", k))
+        return sep.join((key(k) if k else "") + self.dim((" " if k else "") + label) for k, label in items)
+
+    def shortcut_line(self, nav, actions):
+        """The bottom line of a screen with its own operations: first those (chips), then the generic keys `nav`.
+        actions = {key: (label, …)}."""
+        ctx = self.keys([(k, a[0]) for k, a in actions.items()], context=True)
+        return "  " + (ctx + self.dim(" · ") if ctx else "") + self.keys(pairs(nav))
 
     def hint_line(self):
         """The bottom line: the keys of this moment, then the open accesses (muted)."""
@@ -456,7 +474,7 @@ class Screen:
                 pager.resize(size.columns, size.lines - 2)  # rewraps when the window changes
                 with self.lock:
                     self.head, self.body = [], pager.render()
-                self.foot = self.foot or "  " + self.keys(pairs(pager.hint()))
+                self.foot = self.foot or self.shortcut_line(pager.nav(), d.actions)
                 self.draw()
                 what = pager.handle(key())
                 self.foot = ""
@@ -514,7 +532,7 @@ class Screen:
         b.start(on_change=paint)
         try:
             while True:
-                self.foot = self.foot or "  " + self.keys(pairs(view.hint()))
+                self.foot = self.foot or self.shortcut_line(view.nav(), b.actions)
                 paint()
                 k = key()
                 self.foot = ""
@@ -642,48 +660,60 @@ class Screen:
             self.no_input, r = True, ""
         return r or default
 
-    def choose(self, question, options, header=None):
+    def choose(self, question, options, header=None, keys=None):
         """options = [text]; the first is the recommended one. Returns the index. Arrows + Enter (or the number);
-        without a real terminal: type the number. header = column titles shown above the options (a table)."""
+        without a real terminal: type the number. header = column titles shown above the options (a table).
+        keys = one letter per option (None: none): shown as a chip on its row, that letter picks it at once."""
+        keys = list(keys or [])
         self.out("")
         self.out("  " + self.acc("?") + " " + self.bold(question))
         if header:
             self.out(self._menu_header(header, len(options)))
         if self.colors and sys.stdin.isatty():
             try:
-                return self._menu(options, recommend=not header)
+                return self._menu(options, recommend=not header, keys=keys)
             except (OSError, ImportError):
                 pass  # no single keys (odd console): fall back to the number
         for i, o in enumerate(options):
-            self.out(self._menu_row(i, o, None, len(options), "" if header else "  " + self.t["recommended"]))
+            self.out(self._menu_row(i, o, None, len(options), "" if header else "  " + self.t["recommended"],
+                                    keys[i] if i < len(keys) else None))
         while True:
             r = self.ask(self.t["type_number"], "1")
             if r.isdigit() and 1 <= int(r) <= len(options):
                 return int(r) - 1
+            if r and r.lower() in keys:
+                return keys.index(r.lower())
 
     def confirm(self, question, yes=None, no=None):
         return self.choose(question, [yes or self.t["yes"], no or self.t["no"]]) == 0
 
-    def _menu_row(self, i, o, sel, n, rec):
+    def _menu_row(self, i, o, sel, n, rec, key=None):
         """One option, its number right-aligned (1..n) so that texts start in the same column as the header. The
-        selected one is a bar across the width (accent on a dark background), like Claude Code's."""
+        selected one is a bar across the width (accent on a dark background), like Claude Code's. key = its
+        shortcut letter, a chip after the text (also inside the bar)."""
         nw = len(str(n))
-        w = self.text_width() - 6 - nw
+        chip = self.c(self.theme.shortcut, f" {key} ") if key else ""
+        w = self.text_width() - 6 - nw - (len(key) + 4 if key else 0)
         o = o if len(o) <= w else o[:w - 1] + "…"  # one line per option, even on a narrow screen
         has_note = rec and i == 0 and len(o) + len(rec) + 1 <= w
         num = f"{i + 1:>{nw}}."
         if i == sel:
+            bar_style = f"{self.theme.accent};1;{self.theme.select}"
             bar = f"  {self.theme.prompt} {num} {o}" + (rec if has_note else "")
-            return self.c(f"{self.theme.accent};1;{self.theme.select}", bar.ljust(self.text_width()))
-        return self.dim(f"    {num} ") + o + (self.dim(rec) if has_note else "")
+            if not key:
+                return self.c(bar_style, bar.ljust(self.text_width()))
+            rest = max(0, self.text_width() - len(bar) - len(key) - 4)
+            return self.c(bar_style, bar + "  ") + chip + self.c(bar_style, " " * rest)
+        return self.dim(f"    {num} ") + o + (self.dim(rec) if has_note else "") + ("  " + chip if key else "")
 
     def _menu_header(self, header, n):
         pad = " " * (4 + len(str(n)) + 2)
         return pad + self.bold(header) + "\n" + pad + self.dim("─" * visible_len(header))
 
-    def _menu(self, options, recommend=True):
+    def _menu(self, options, recommend=True, keys=()):
         rec = "  " + self.t["recommended"] if recommend else ""
-        row = lambda i, o: self._menu_row(i, o, sel, n, rec)
+        letter = {k: i for i, k in enumerate(keys) if k}
+        row = lambda i, o: self._menu_row(i, o, sel, n, rec, keys[i] if i < len(keys) else None)
         sel, n = 0, len(options)
         self.mode = "choose"
 
@@ -698,6 +728,9 @@ class Screen:
             while True:
                 k = key()
                 if k == "enter":
+                    break
+                if k in letter:  # a shortcut: picked at once
+                    sel = letter[k]
                     break
                 sel = move(k)
                 with self.lock:
@@ -717,6 +750,8 @@ class Screen:
                 k = key()
                 if k == "enter":
                     return sel
+                if k in letter:
+                    return letter[k]
                 new = move(k)
                 if new == sel:
                     continue

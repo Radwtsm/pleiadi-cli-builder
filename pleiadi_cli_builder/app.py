@@ -54,8 +54,9 @@ def write_json(path, data):
 
 
 class Command:
-    def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=(), dry=True):
+    def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None):
         self.name, self.fn, self.help, self.menu, self.args, self.effects = name, fn, help, menu, args, effects
+        self.key = key
         self.json, self.example, self.dry = json, list(example), dry and effects
 
 
@@ -191,15 +192,16 @@ class App:
             return None
         return self.commands.get(back.get(typed, typed))
 
-    def command(self, name, help="", menu=None, args="", effects=True, json=False, example=(), dry=True):
+    def command(self, name, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None):
         """menu = the text in the interactive menu (None = not in the menu); args = usage shown in help.
         effects=False declares a read-only command: its steps can only check (enforced in run_steps). A command
         with effects gets --prova/--dry-run: screen.dry is True and run_steps only says what it would do.
         json=True: the command prints its data with screen.table and supports --json; example = sample arguments
         for the contract tests (pleiadi_cli_builder.contract). dry=False: no --prova here (the command forwards to a
-        program with its own dry run): the flag is passed through untouched."""
+        program with its own dry run): the flag is passed through untouched. key = its letter in the menu (a
+        shortcut: picks it at once); without one it gets the first free letter of its menu text."""
         def add(fn):
-            self.commands[name] = Command(name, fn, help, menu, args, effects, json, example, dry)
+            self.commands[name] = Command(name, fn, help, menu, args, effects, json, example, dry, key)
             return fn
         return add
 
@@ -232,17 +234,34 @@ class App:
                 out += [f"  {line}" for line in textwrap.wrap(a, 96, subsequent_indent="    ")] + [" " * (w + 2) + b]
         return "\n".join(out)
 
-    def menu(self, screen):
-        t = HELP.get(self.lang, HELP["en"])
+    def _menu_items(self):
         items = [c for c in self.commands.values() if c.menu]
         for name, sub in self.sections.items():  # a section = one item that opens its own menu
             items.append(Command(name, lambda s, a, sub=sub: sub.menu(s), menu=f"{sub.section_title} ›", effects=False))
+        return items
+
+    def menu_keys(self, items=None):
+        """One letter per menu item, then «q» for Quit: the chosen ones (key=) first, the others the first free
+        letter of their text. j k q are the menu's own (and digits pick by number)."""
+        items = self._menu_items() if items is None else items
+        taken = {"q", "j", "k"} | {c.key for c in items if c.key}
+        out = []
+        for c in items:
+            k = c.key or next((ch for ch in c.menu.lower() if "a" <= ch <= "z" and ch not in taken), None)
+            taken.add(k)
+            out.append(k)
+        return out + ["q"]
+
+    def menu(self, screen):
+        t = HELP.get(self.lang, HELP["en"])
+        items = self._menu_items()
+        letters = self.menu_keys(items)
         code = 0
         screen.clear()
         screen.header(self.menu_subtitle)
         with access.session(self.session_idle_minutes):  # a VPN opened for one action serves the next ones
             while True:  # back to the menu after each item, until «Quit»
-                i = screen.choose(t[2], [c.menu for c in items] + [t[3]])
+                i = screen.choose(t[2], [c.menu for c in items] + [t[3]], keys=letters)
                 if i == len(items):
                     return code
                 code = self.call(items[i], screen, [])

@@ -151,9 +151,13 @@ class BoardView:
             out.append(self.color(self.select, text.ljust(self.width)) if at == self.cur else line)
         return out + [""] * (self.height - len(out))
 
+    def nav(self):
+        """The generic keys (the actions are shown apart, highlighted: Screen.shortcut_line)."""
+        return self.t["hint_board"]
+
     def hint(self):
         acts = " · ".join(f"{k} {label}" for k, (label, _) in self.b.actions.items())
-        return self.t["hint_board"].format(actions=f" · {acts}" if acts else "")
+        return (acts + " · " if acts else "") + self.nav()
 
     # ── keys ──
     def handle(self, k):
