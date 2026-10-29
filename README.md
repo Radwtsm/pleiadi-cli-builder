@@ -14,6 +14,10 @@ Cosa c'è:
 | `run` / `run_live` | `proc.py` | lancia programmi: catturati, interattivi (lo schermo si sospende) o dal vivo nella riga di stato |
 | `Step` / `run_steps` | `steps.py` | passi che si possono rilanciare: ognuno controlla prima e salta il fatto; ✗ con cosa fare e «Riprova adesso»; con `check_only` è un `doctor` |
 | `Scene` / `play` | `intro.py` | l'intro animata: volo fra le stelle, costellazione, due forme 3D che ruotano e si trasformano, titolo in pixel |
+| `screen.table()` / `--json` | `term.py`, `app.py` | risultati in una tabella che sta nella finestra; con `--json` gli stessi dati su stdout per altri programmi (i messaggi vanno su stderr) |
+| `secret` / `forget` | `credentials.py` | token e chiavi nel portachiavi del sistema (Keychain, Credential Manager, secret-tool): chiesti una volta senza mostrarli, mai in un file o in un argomento |
+| `temporary` | `access.py` | un accesso riservato (VPN, tunnel, credenziale elevata) aperto solo per l'operazione e chiuso sempre, anche se fallisce; lascia aperto ciò che era già aperto |
+| `ReadOnlyClient` | `webapi.py` | client JSON per API web (tracker, CI, wiki) che ha solo GET: non può cambiare niente, qualunque permesso abbia il token. Pagine, nuovi tentativi, token in un'intestazione, CA interna (`ca_file`) o impronta del certificato fissata con scadenza (`pin_sha256` + `pin_expires`), mai la verifica spenta |
 | `bundle` / `install_launcher` / `self_update` | `install.py` | un file unico `.pyz` con dentro la libreria, il comando in `~/.local/bin`, l'aggiornamento che sostituisce il file solo se è valido e il suo sha256 corrisponde |
 
 ## Prova
@@ -58,6 +62,26 @@ def doctor(screen, args):
 
 app.run()
 ```
+
+Un comando che legge da un tracker, per esempio, mette insieme i pezzi così:
+
+```python
+from pleiadi_cli_builder import App, ReadOnlyClient, secret, temporary, run
+
+app = App("team-kit", title="Team kit")
+
+@app.command("aperte", help="le task aperte di un progetto", args="PROGETTO", effects=False)
+def aperte(screen, args):
+    token = secret("team-kit.tracker", "io", screen, "Chiave API del tracker:")
+    vpn = lambda *a: run("vpn-cli", *a)[0] == 0  # il comando della tua VPN
+    with temporary(lambda: vpn("up"), lambda: vpn("down"), is_open=lambda: vpn("status"), screen=screen, label="VPN"):
+        api = ReadOnlyClient("https://tracker.example", token=token, header="X-Api-Key", scheme="")
+        rows = [{"id": t["id"], "titolo": t["subject"], "stato": t["status"]["name"]}
+                for t in api.pages("/issues.json", {"project_id": args[0], "status_id": "open"}, items="issues")]
+    screen.table(rows)
+```
+
+`team-kit aperte web` mostra la tabella, `team-kit aperte web --json | jq …` passa i dati a un altro programma.
 
 ## Regole del design
 

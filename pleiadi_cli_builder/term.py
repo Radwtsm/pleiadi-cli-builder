@@ -3,7 +3,7 @@ questions (arrow-key menus, text, yes/no). Plain line output when there is no re
 
 Functions in a tool should not print: they return values and the Screen prints, so the same logic can be
 reused by another interface (a window app, a test)."""
-import os, re, shutil, sys, textwrap, threading, time
+import json, os, re, shutil, sys, textwrap, threading, time
 
 WIN, MAC = os.name == "nt", sys.platform == "darwin"
 
@@ -12,12 +12,14 @@ TEXTS = {
            "recommended": "(consigliata)", "type_number": "Scrivi il numero e premi Invio:", "yes": "Sì", "no": "No",
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
-           "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)"},
+           "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)",
+           "empty": "niente da mostrare", "rows": "{n} righe"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
-           "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)"},
+           "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)",
+           "empty": "nothing to show", "rows": "{n} rows"},
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
@@ -123,7 +125,7 @@ class Screen:
                 self.colors = False
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
-        self.results, self.no_input, self.dry, self.read_only = [], False, False, False
+        self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
         self.head, self.body, self.foot, self.last = [], [], "", []
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
 
@@ -177,7 +179,7 @@ class Screen:
 
     def out(self, line=""):
         if not self.full:
-            print(line)
+            print(line, file=sys.stderr if self.json else sys.stdout)  # --json: stdout only for the data
             return
         self.open()
         with self.lock:
@@ -281,6 +283,44 @@ class Screen:
             self.out("    " + self.acc(self.theme.arrow) + " " + lines[0])
             for x in lines[1:]:
                 self.out("      " + x)
+
+    def table(self, rows, columns=None, titles=None):
+        """rows = [dict]; columns = keys to show (default: those of the first row); titles = {key: header}.
+        With --json (screen.json) the rows go to stdout as JSON, for other programs; otherwise a table that fits the
+        window: the widest column is cut first."""
+        columns = columns or (list(rows[0]) if rows else [])
+        if self.json:
+            print(json.dumps([{k: r.get(k) for k in columns} for r in rows], ensure_ascii=False, indent=1))
+            return
+        if not rows:
+            self.info(self.dim(self.t["empty"]))
+            return
+        titles = titles or {}
+        cell = lambda v: "" if v is None else " ".join(str(v).split())
+        head = [str(titles.get(k, k)) for k in columns]
+        body = [[cell(r.get(k)) for k in columns] for r in rows]
+        widths = [max(len(h), *(len(b[i]) for b in body)) for i, h in enumerate(head)]
+        room = self.text_width() - 4 - 2 * (len(columns) - 1)
+        while sum(widths) > room and max(widths) > 6:
+            widths[widths.index(max(widths))] -= 1
+        fit = lambda v, w: v if len(v) <= w else v[:w - 1] + "…"
+        line = lambda vals: "  ".join(fit(v, w).ljust(w) for v, w in zip(vals, widths)).rstrip()
+        self.out("    " + self.bold(line(head)))
+        for b in body:
+            self.out("    " + line(b))
+        self.out("    " + self.dim(self.t["rows"].format(n=len(rows))))
+
+    def secret_input(self, question):
+        """A hidden answer (a token, a password): never shown, never kept on screen."""
+        import getpass
+        self.suspend()
+        try:
+            return getpass.getpass(f"  ? {question} ").strip()
+        except EOFError:
+            self.no_input = True
+            return ""
+        finally:
+            self.resume()
 
     def link(self, label, url):
         self.out("    " + self.dim(f"{label:<26}") + " " + (self.c("4", url) if url.startswith("http") else url))

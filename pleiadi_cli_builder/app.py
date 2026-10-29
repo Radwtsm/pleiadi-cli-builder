@@ -9,6 +9,7 @@ HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci",
         "en": ("commands", "no arguments: the menu", "What do you want to do?", "Quit", "Enter to go back to the menu",
                "unknown command", "read-only", "--dry-run")}
 DRY_FLAGS = ("--prova", "--dry-run")
+JSON_FLAG = "--json"
 
 
 def read_json(path, default=None):
@@ -121,10 +122,13 @@ class App:
     def call(c, screen, args):
         screen.read_only = not c.effects
         screen.dry = c.effects and any(a in DRY_FLAGS for a in args)
+        screen.json = JSON_FLAG in args
+        if screen.json:
+            screen.full = False  # data for another program: plain lines on stderr, JSON on stdout
         try:
-            return c.fn(screen, [a for a in args if a not in DRY_FLAGS]) or 0
+            return c.fn(screen, [a for a in args if a not in DRY_FLAGS and a != JSON_FLAG]) or 0
         finally:
-            screen.read_only = screen.dry = False
+            screen.read_only = screen.dry = screen.json = False
 
     def run(self):
         sys.exit(self.main())

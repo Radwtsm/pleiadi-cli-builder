@@ -1,8 +1,10 @@
-import io, os, subprocess, sys, tempfile, unittest
+import io, json, os, subprocess, sys, tempfile, unittest
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pleiadi_cli_builder import App, Scene, Screen, Step, Theme, bundle, clip, run_steps, self_update
+from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Scene, Screen, Step, Theme, bundle, clip, forget,
+                                 run_steps, secret, self_update, temporary)
+from pleiadi_cli_builder import credentials, webapi
 from pleiadi_cli_builder.intro import SHAPES, Renderer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -80,6 +82,171 @@ class Apps(unittest.TestCase):
         self.app.save_state(a=1)
         self.app.save_state(b=2)
         self.assertEqual(self.app.state(), {"a": 1, "b": 2})
+
+
+class Table(unittest.TestCase):
+    def test_table_and_json(self):
+        app = App("t-table", lang="en")
+        rows = [{"id": 1, "subject": "a very long subject " * 10, "status": "open"}, {"id": 2, "subject": "b", "status": None}]
+        app.command("list", effects=False)(lambda s, a: s.table(rows, ["id", "subject", "status"], {"subject": "Title"}))
+        code, out = plain(lambda: app.main(["list"]))
+        self.assertIn("Title", out)
+        self.assertIn("2 rows", out)
+        self.assertTrue(all(len(l) <= 101 for l in out.splitlines()))
+        err = io.StringIO()
+        from contextlib import redirect_stderr
+        with redirect_stderr(err):
+            code, out = plain(lambda: app.main(["list", "--json"]))
+        self.assertEqual(json.loads(out)[1], {"id": 2, "subject": "b", "status": None})
+
+
+class Credentials(unittest.TestCase):
+    def setUp(self):
+        credentials.KEYCHAIN = credentials.MemoryOnly()
+
+    def tearDown(self):
+        credentials.KEYCHAIN = None
+
+    def test_memory_keychain(self):
+        self.assertIsNone(secret("t.tool", "me"))  # nobody to ask: None, never a guess
+        credentials.keychain().set("t.tool", "me", "tok")
+        self.assertEqual(secret("t.tool", "me"), "tok")
+        self.assertTrue(forget("t.tool", "me"))
+        self.assertIsNone(secret("t.tool", "me"))
+
+    @unittest.skipUnless(os.environ.get("PCB_REAL_KEYCHAIN") and sys.platform == "darwin", "touches the real keychain")
+    def test_real_mac_keychain(self):
+        k = credentials.MacKeychain()
+        self.assertTrue(k.set("pleiadi-cli-builder.test", "test", "valore di prova 123"))
+        self.assertEqual(k.get("pleiadi-cli-builder.test", "test"), "valore di prova 123")
+        self.assertTrue(k.delete("pleiadi-cli-builder.test", "test"))
+        self.assertIsNone(k.get("pleiadi-cli-builder.test", "test"))
+
+
+class Access(unittest.TestCase):
+    def test_closed_even_on_failure(self):
+        log = []
+        with self.assertRaises(ZeroDivisionError):
+            with temporary(lambda: log.append("open"), lambda: log.append("close")):
+                1 / 0
+        self.assertEqual(log, ["open", "close"])
+
+    def test_leaves_open_what_was_open(self):
+        log = []
+        with temporary(lambda: log.append("open"), lambda: log.append("close"), is_open=lambda: True):
+            pass
+        self.assertEqual(log, [])
+
+    def test_open_failure(self):
+        with self.assertRaises(RuntimeError):
+            with temporary(lambda: False, lambda: None, label="VPN"):
+                pass
+
+
+class Api(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import http.server, threading
+        cls.seen, cls.fail = [], [1]
+        items = [{"id": i} for i in range(1, 8)]
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                cls.seen.append((self.command, self.path, self.headers.get("X-Api-Key")))
+                if cls.fail:
+                    cls.fail.pop()
+                    self.send_response(503)
+                    self.send_header("Retry-After", "0")
+                    self.end_headers()
+                    return
+                q = dict(x.split("=") for x in self.path.split("?")[1].split("&"))
+                if self.path.startswith("/missing"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                off, lim = int(q["offset"]), int(q["limit"])
+                body = json.dumps({"issues": items[off:off + lim], "total_count": len(items)}).encode()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+        cls.srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{cls.srv.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def test_pages_retry_header(self):
+        api = ReadOnlyClient(self.base, token="k", header="X-Api-Key", scheme="")
+        got = [x["id"] for x in api.pages("/issues.json", {"status": "open"}, items="issues", limit=3)]
+        self.assertEqual(got, list(range(1, 8)))
+        self.assertEqual(self.seen[0][0], "GET")
+        self.assertTrue(all(h == "k" for _, _, h in self.seen))
+        self.assertTrue(all("k" not in p.split("?")[-1].split("&") and "=k" not in p for _, p, _ in self.seen))
+        with self.assertRaises(HTTPError):
+            api.get("/missing", {"offset": 0, "limit": 1})
+
+    def test_read_only_by_construction(self):
+        api = ReadOnlyClient(self.base)
+        self.assertFalse(any(hasattr(api, m) for m in ("post", "put", "patch", "delete", "request")))
+        with self.assertRaises(ValueError):
+            ReadOnlyClient("http://tracker.example")
+        with self.assertRaises(ValueError):
+            ReadOnlyClient("https://tracker.example", pin_sha256="ab" * 32)
+
+    def test_pin_expiry(self):
+        import datetime
+        der = b"cert"
+        self.assertTrue(webapi._pin_ok(der, webapi.fingerprint(der), "2099-01-01"))
+        self.assertFalse(webapi._pin_ok(der, "00" * 32, "2099-01-01"))
+        with self.assertRaises(Exception):
+            webapi._pin_ok(der, webapi.fingerprint(der), "2020-01-01", today=datetime.date(2026, 1, 1))
+
+    def test_pinned_https_for_real(self):
+        import shutil, ssl, http.server, threading
+        if not shutil.which("openssl"):
+            self.skipTest("no openssl")
+        d = tempfile.mkdtemp()
+        key, crt = os.path.join(d, "k.pem"), os.path.join(d, "c.pem")
+        r = subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt,
+                            "-days", "2", "-subj", "/CN=localhost"], capture_output=True)
+        if r.returncode:
+            self.skipTest("openssl failed")
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"ok": true}')
+        class Quiet(http.server.HTTPServer):
+            def handle_error(self, *a):  # the client refusing the certificate resets the connection: expected
+                pass
+        srv = Quiet(("127.0.0.1", 0), H)
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(crt, key)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            base = f"https://127.0.0.1:{srv.server_port}"
+            with open(crt) as f:
+                der = ssl.PEM_cert_to_DER_cert(f.read())
+            ok = ReadOnlyClient(base, pin_sha256=webapi.fingerprint(der), pin_expires="2099-01-01", retries=0)
+            self.assertEqual(ok.get("/x"), {"ok": True})
+            with self.assertRaises(Exception):  # unknown authority, no pin: refused, never accepted silently
+                ReadOnlyClient(base, retries=0).get("/x")
+            with self.assertRaises(Exception):
+                ReadOnlyClient(base, pin_sha256="00" * 32, pin_expires="2099-01-01", retries=0).get("/x")
+        finally:
+            srv.shutdown()
+            srv.server_close()
 
 
 class Intro(unittest.TestCase):
