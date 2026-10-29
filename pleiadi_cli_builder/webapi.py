@@ -60,6 +60,7 @@ class ReadOnlyClient:
         if pin_sha256 and not pin_expires:
             raise ValueError("a pinned fingerprint needs its expiry date (pin_expires='YYYY-MM-DD')")
         self.base, self.timeout, self.retries = base_url.rstrip("/"), timeout, retries
+        self.pin_expires = pin_expires
         self.headers = {"Accept": "application/json", "User-Agent": agent}
         if token:
             self.headers[header] = f"{scheme} {token}".strip()
@@ -109,3 +110,20 @@ class ReadOnlyClient:
             offset += len(batch)
             if not batch or (total in (data or {}) and offset >= data[total]):
                 return
+
+
+def pin_step(client, warn_days=30):
+    """A doctor step: ✓ while the pinned certificate fingerprint has more than `warn_days` left, ✗ with what to do
+    when it expires soon or has expired (a pin that expires unnoticed stops the tool on that day)."""
+    from .steps import Step
+
+    def check():
+        if not client.pin_expires:
+            return True, "no pinned fingerprint"
+        left = (datetime.date.fromisoformat(client.pin_expires) - datetime.date.today()).days
+        if left > warn_days:
+            return True, f"expires {client.pin_expires} ({left} days)"
+        return False, (f"expired on {client.pin_expires}" if left < 0 else f"expires in {left} days ({client.pin_expires})")
+    return Step(f"certificate of {client.base}", check,
+                fix="Get the new certificate's sha256 from its owner (never from the connection itself) and update "
+                    "pin_sha256 and pin_expires before that date.")

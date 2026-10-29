@@ -18,9 +18,42 @@ Cosa c'è:
 | `secret` / `forget` | `credentials.py` | token e chiavi nel portachiavi del sistema (Keychain, Credential Manager, secret-tool): chiesti una volta senza mostrarli, mai in un file o in un argomento |
 | `temporary` | `access.py` | un accesso riservato (VPN, tunnel, credenziale elevata) aperto solo per l'operazione e chiuso sempre, anche se fallisce; lascia aperto ciò che era già aperto |
 | `ReadOnlyClient` | `webapi.py` | client JSON per API web (tracker, CI, wiki) che ha solo GET: non può cambiare niente, qualunque permesso abbia il token. Pagine, nuovi tentativi, token in un'intestazione, CA interna (`ca_file`) o impronta del certificato fissata con scadenza (`pin_sha256` + `pin_expires`), mai la verifica spenta |
+| `write_commands` / `PolicyError` | `app.py`, `proc.py` | i programmi che cambiano qualcosa (`App(write_commands=[["git", "push"], ["rm"]])`): `run()` li rifiuta nei comandi di sola lettura e con `--prova`. Un segreto letto con `secret()` non può finire negli argomenti di un programma (si passa con `env=`) ed è mascherato `••••` in ogni output |
+| `contract.tests(app)` | `contract.py` | i test che ogni tool riceve gratis: `--prova` in una HOME vuota non scrive niente, non applica passi e non lancia comandi di scrittura; `--json` dà JSON valido (comandi con `json=True`); il codice non carica codice a runtime (`exec`, `eval`, `importlib`, `runpy`): la configurazione si legge solo come JSON con `app.config()` |
+| `segreti` / `scan` | `scan.py` | ricerca di segreti nei file in stage con la sola libreria standard: il pre-commit la usa quando gitleaks manca |
+| `pin_step(client)` | `webapi.py` | passo del doctor: ✗ 30 giorni prima che scada l'impronta fissata |
 | `bundle` / `install_launcher` / `self_update` | `install.py` | un file unico `.pyz` con dentro la libreria, il comando in `~/.local/bin`, l'aggiornamento che sostituisce il file solo se è valido e il suo sha256 corrisponde |
 
-## Prova
+## Provalo su un altro computer (serve solo Python 3.8+)
+
+Un file solo, dalla release su GitHub; prima di aprirlo controlla che l'impronta sia quella pubblicata accanto.
+
+Mac o Linux, nel Terminale:
+
+```bash
+curl -fLO https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pleiadi-cli-builder.pyz
+```
+
+```bash
+curl -fsL https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pleiadi-cli-builder.pyz.sha256 | shasum -a 256 -c
+```
+
+```bash
+python3 pleiadi-cli-builder.pyz
+```
+
+Windows, in PowerShell:
+
+```powershell
+$u = "https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pleiadi-cli-builder.pyz"
+Invoke-WebRequest $u -OutFile pleiadi-cli-builder.pyz
+(Get-FileHash pleiadi-cli-builder.pyz -Algorithm SHA256).Hash.ToLower() -eq (Invoke-WebRequest "$u.sha256").Content.Split(" ")[0]
+py pleiadi-cli-builder.pyz
+```
+
+L'ultima riga prima di `py` deve dire `True`. Senza argomenti si apre il menu; `demo`, `intro`, `new` per provare.
+
+## Prova (da questa cartella)
 
 ```bash
 python3 -m pleiadi_cli_builder demo
@@ -36,7 +69,8 @@ python3 -m pleiadi_cli_builder intro "MIO TOOL" --resta
 python3 -m pleiadi_cli_builder new deploy-kit
 ```
 
-Crea `deploy-kit/deploy_kit/__main__.py` con `setup` (prepara tutto, si rilancia) e `doctor` (solo controlli).
+Crea `deploy-kit/deploy_kit/__main__.py` con `setup` (prepara tutto, si rilancia) e `doctor` (solo controlli),
+`tests/test_contract.py` (i test di contratto) e `.githooks/pre-commit` (test + ricerca di segreti).
 Mentre lo sviluppi: `PYTHONPATH=<questa cartella> python3 -m deploy_kit`. Per distribuirlo:
 
 ```bash
@@ -104,7 +138,7 @@ Variabili per l'intro: `PCB_COLORS=256|24` forza i colori, `PCB_PIXEL=2` usa i m
 ## Test
 
 ```bash
-python3 tests/test_all.py
+python3 tests/test_all.py && python3 tests/test_04.py
 ```
 
 Pre-commit (test + gitleaks se c'è): `git config core.hooksPath .githooks`.

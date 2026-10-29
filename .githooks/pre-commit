@@ -2,5 +2,6 @@
 # test della logica e niente segreti prima di ogni commit
 set -e
 cd "$(git rev-parse --show-toplevel)"
-python3 tests/test_all.py >/dev/null 2>&1 || { python3 tests/test_all.py; exit 1; }
-if command -v gitleaks >/dev/null; then gitleaks git --staged --no-banner --redact; fi
+for t in tests/test_*.py; do python3 "$t" >/dev/null 2>&1 || { python3 "$t"; exit 1; }; done
+if command -v gitleaks >/dev/null; then gitleaks git --staged --no-banner --redact
+else python3 -m pleiadi_cli_builder segreti --staged; fi

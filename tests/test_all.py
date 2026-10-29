@@ -1,4 +1,4 @@
-import io, json, os, subprocess, sys, tempfile, unittest
+import io, json, os, pathlib, subprocess, sys, tempfile, unittest
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -272,17 +272,18 @@ class Ship(unittest.TestCase):
         d = tempfile.mkdtemp()
         env = {**os.environ, "PYTHONPATH": ROOT}
         r = subprocess.run([sys.executable, "-m", "pleiadi_cli_builder", "new", "deploy-kit", os.path.join(d, "dk")],
-                           env=env, capture_output=True, text=True)
+                           env=env, capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         out = os.path.join(d, "dist", "deploy-kit.pyz")
         os.makedirs(os.path.dirname(out))
         digest = bundle(os.path.join(d, "dk"), "deploy_kit.__main__:main", out)
         clean = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}  # the .pyz must carry the library
-        r = subprocess.run([sys.executable, out, "doctor"], capture_output=True, text=True, cwd=d, env=clean)
+        r = subprocess.run([sys.executable, out, "doctor"], capture_output=True, text=True, encoding="utf-8", cwd=d,
+                           env=clean)
         self.assertIn("git", r.stdout, r.stderr)
         self.assertIn("a posto", r.stdout)
         dest = os.path.join(d, "installed", "deploy-kit.pyz")
-        url = "file://" + out
+        url = pathlib.Path(out).as_uri()
         self.assertEqual(self_update(url, dest, sha256_url=url + ".sha256"), (True, "updated"))
         self.assertEqual(self_update(url, dest, url + ".sha256"), (True, "up to date"))
         with open(out + ".sha256", "w") as f:

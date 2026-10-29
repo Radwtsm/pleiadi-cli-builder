@@ -23,6 +23,9 @@ class Step:
         self.plan = plan
 
 
+APPLIED = []  # names of the steps applied in this run (the contract tests read it)
+
+
 def _norm(v):
     if isinstance(v, tuple):
         return bool(v[0]), str(v[1] or "")
@@ -51,6 +54,7 @@ def run_steps(screen, steps, check_only=False):
         if check_only or not s.apply:
             screen.result(Result(s.name, False, fix=s.fix or note))
             continue
+        APPLIED.append(s.name)
         try:
             if s.wait:
                 with screen.wait(s.wait):

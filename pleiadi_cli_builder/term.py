@@ -94,6 +94,19 @@ SCREENS = []  # the open full screen (one): run(interactive=True) suspends it fo
 LIVE = []  # the open status line (Screen.wait): long functions report progress into it without printing
 
 
+SECRETS = set()  # values read with secret() in this run: never in arguments, masked in every output
+MASK = "••••"
+
+
+def mask(text):
+    """The text with every secret of this run replaced by ••••."""
+    if not SECRETS or not text:
+        return text
+    for v in sorted(SECRETS, key=len, reverse=True):
+        text = text.replace(v, MASK)
+    return text
+
+
 def progress(fraction=None, detail=None):
     """Report progress from inside any function: goes to the open spinner line, if there is one."""
     if LIVE:
@@ -178,6 +191,7 @@ class Screen:
             self.draw()
 
     def out(self, line=""):
+        line = mask(line)
         if not self.full:
             print(line, file=sys.stderr if self.json else sys.stdout)  # --json: stdout only for the data
             return
@@ -290,7 +304,7 @@ class Screen:
         window: the widest column is cut first."""
         columns = columns or (list(rows[0]) if rows else [])
         if self.json:
-            print(json.dumps([{k: r.get(k) for k in columns} for r in rows], ensure_ascii=False, indent=1))
+            print(mask(json.dumps([{k: r.get(k) for k in columns} for r in rows], ensure_ascii=False, indent=1)))
             return
         if not rows:
             self.info(self.dim(self.t["empty"]))
@@ -535,7 +549,7 @@ class Wait:
         if s.full:
             s.open()
         elif not s.colors:
-            print("    … " + self.text)
+            print("    … " + self.text, file=sys.stderr)  # stdout stays for the data
             return self
 
         def spin():
@@ -546,8 +560,8 @@ class Wait:
                     s.foot = ln
                     s.draw()
                 else:
-                    sys.stdout.write("\r" + ln + "\033[K")
-                    sys.stdout.flush()
+                    sys.stderr.write("\r" + ln + "\033[K")
+                    sys.stderr.flush()
                 i += 1
         self.thread = threading.Thread(target=spin, daemon=True)
         self.thread.start()
@@ -563,4 +577,5 @@ class Wait:
                 self.s.foot = ""
                 self.s.draw()
             else:
-                sys.stdout.write("\r\033[K")
+                sys.stderr.write("\r\033[K")
+                sys.stderr.flush()

@@ -1,5 +1,5 @@
 """`python3 -m pleiadi_cli_builder`: the builder's own CLI, made with the library itself."""
-import os, re
+import os, re, stat, sys
 
 from . import App, Scene, Step, bundle, play, run_steps
 
@@ -11,7 +11,8 @@ import os, shutil
 
 from pleiadi_cli_builder import App, Scene, Step, play, run, run_steps
 
-app = App("{name}", title="{title}", accent="#4a6cf7", first_run="setup", menu_subtitle="cosa c'è e cosa manca")
+app = App("{name}", title="{title}", accent="#4a6cf7", first_run="setup", menu_subtitle="cosa c'è e cosa manca",
+          write_commands=[["git", "push"], ["rm"]])  # i programmi che cambiano qualcosa: mai nei comandi di lettura
 
 
 def steps():
@@ -44,9 +45,31 @@ if __name__ == "__main__":
     main()
 '''
 
+CONTRACT = '''"""Le regole generali come test: --prova non scrive niente, --json dà JSON, niente codice caricato a runtime."""
+import os, sys, unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pleiadi_cli_builder.contract import tests
+from {pkg}.__main__ import app
+
+Contract = tests(app)
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+
+HOOK = '''#!/bin/sh
+# prima di ogni commit: i test e nessun segreto (gitleaks se c'è, se no la ricerca della libreria)
+set -e
+cd "$(git rev-parse --show-toplevel)"
+for t in tests/test_*.py; do python3 "$t" >/dev/null 2>&1 || {{ python3 "$t"; exit 1; }}; done
+if command -v gitleaks >/dev/null; then gitleaks git --staged --no-banner --redact
+else python3 -m pleiadi_cli_builder segreti --staged; fi
+'''
+
 
 @app.command("new", args="NOME [CARTELLA]", help="un tool nuovo pronto da modificare (setup + doctor)",
-             menu="Crea un tool nuovo")
+             menu="Crea un tool nuovo", example=["prova-tool"])
 def new(screen, args):
     name = args[0] if args else screen.ask("Nome del comando (minuscole e trattini):", "mio-tool")
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,40}", name):
@@ -59,20 +82,50 @@ def new(screen, args):
         screen.todo(f"Esiste già: {path}")
         return 1
     if screen.dry:
-        screen.info(f"farei: {path} con i comandi setup e doctor")
+        screen.info(f"farei: {path} con setup e doctor, tests/test_contract.py, .githooks/pre-commit")
         return 0
     os.makedirs(os.path.dirname(path))
     open(os.path.join(folder, pkg, "__init__.py"), "w").close()
     title = name.replace("-", " ").title()
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(TEMPLATE.format(name=name, title=title))
+    files = {path: TEMPLATE.format(name=name, title=title),
+             os.path.join(folder, "tests", "test_contract.py"): CONTRACT.format(pkg=pkg),
+             os.path.join(folder, ".githooks", "pre-commit"): HOOK.format()}
+    for p, text in files.items():
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+    hook = os.path.join(folder, ".githooks", "pre-commit")
+    os.chmod(hook, os.stat(hook).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     screen.section(f"Creato {name}")
     screen.info(f"Prova:      cd {folder} && python3 -m {pkg}")
+    screen.info(f"Test:       python3 {folder}/tests/test_contract.py")
+    screen.info(f"Pre-commit: git init && git config core.hooksPath .githooks (dentro {folder})")
     screen.info(f"Un file:    python3 -m pleiadi_cli_builder bundle {folder} {pkg}.__main__:main dist/{name}.pyz")
     return 0
 
 
-@app.command("bundle", args="CARTELLA MODULO:FUNZIONE USCITA.pyz", help="un file unico che gira con solo Python")
+@app.command("segreti", args="[--staged | FILE…]", help="cerca segreti nei file in stage (o in quelli indicati)",
+             effects=False)
+def segreti(screen, args):
+    from . import scan
+    if args and args[0] != "--staged":
+        found = []
+        for p in args:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                found += [(p, kind, n) for kind, n in scan.text(f.read())]
+    else:
+        found = scan.staged()
+    for p, kind, n in found:
+        screen.out(screen.c(screen.theme.error, "✗") + f" {p}:{n}  {kind}")
+    if found:
+        screen.todo("Togli il segreto dal file (leggilo con secret() o da un file fuori dal repo); se è già stato\n"
+                    "pubblicato va cambiato, non solo cancellato. Un falso allarme: «scan: ok» in fondo alla riga.")
+        return 1
+    return 0
+
+
+@app.command("bundle", args="CARTELLA MODULO:FUNZIONE USCITA.pyz", help="un file unico che gira con solo Python",
+             example=["tool", "tool.__main__:main", "dist/tool.pyz"])
 def bundle_cmd(screen, args):
     if len(args) != 3:
         screen.todo("Uso: bundle CARTELLA MODULO:FUNZIONE USCITA.pyz")
@@ -113,5 +166,9 @@ def intro(screen, args):
                 hold=hold)
 
 
-if __name__ == "__main__":
+def main():
     app.run()
+
+
+if __name__ == "__main__":
+    main()

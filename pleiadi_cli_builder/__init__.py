@@ -7,12 +7,12 @@ from .app import App, read_json, write_json
 from .credentials import forget, secret
 from .install import bundle, install_launcher, self_update
 from .intro import SHAPES, TINTS, Scene, play
-from .proc import run, run_live
+from .proc import PolicyError, run, run_live
 from .steps import Result, Step, run_steps
 from .term import Screen, Theme, clip, key, progress
-from .webapi import HTTPError, ReadOnlyClient
+from .webapi import HTTPError, ReadOnlyClient, pin_step
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __all__ = ["App", "Screen", "Theme", "Step", "Result", "run_steps", "run", "run_live", "progress", "Scene", "play",
            "SHAPES", "TINTS", "bundle", "install_launcher", "self_update", "read_json", "write_json", "clip", "key",
-           "temporary", "secret", "forget", "ReadOnlyClient", "HTTPError"]
+           "temporary", "secret", "forget", "ReadOnlyClient", "HTTPError", "pin_step", "PolicyError"]

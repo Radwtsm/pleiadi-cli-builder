@@ -3,7 +3,7 @@ Service (secret-tool). Asked once with hidden input, stored there, never in a fi
 the tool. No keychain = asked every time, kept only in memory."""
 import subprocess, sys
 
-from .term import MAC, WIN
+from .term import MAC, SECRETS, WIN
 
 
 class Keychain:
@@ -140,11 +140,13 @@ def secret(service, account, screen=None, question=None):
     k = keychain()
     v = k.get(service, account)
     if v:
+        SECRETS.add(v)
         return v
     if screen is None or not sys.stdin.isatty():
         return None
     v = screen.secret_input(question or f"{service} ({account}):")
     if v:
+        SECRETS.add(v)
         k.set(service, account, v)
     return v or None
 

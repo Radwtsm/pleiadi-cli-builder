@@ -97,7 +97,7 @@ def bundle(source_dir, entry, out, library=True):
     import tempfile
     with tempfile.TemporaryDirectory() as tmp:
         stage = os.path.join(tmp, "app")
-        shutil.copytree(source_dir, stage, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", "tests"))
+        shutil.copytree(source_dir, stage, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".githooks", "tests"))
         if library:
             here = os.path.dirname(os.path.abspath(__file__))
             shutil.copytree(here, os.path.join(stage, os.path.basename(here)),
