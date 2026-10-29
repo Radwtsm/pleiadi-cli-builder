@@ -16,7 +16,9 @@ TEXTS = {
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
            "minutes": "min", "timeout": "tempo scaduto", "would": "farei", "planned": "{n} da fare, niente cambiato (prova)",
            "empty": "niente da mostrare", "rows": "{n} righe", "row": "1 riga", "open_q": "Quale apro?",
-           "back": "Indietro", "not_found": "non trovato (un tasto per continuare)"},
+           "back": "Indietro", "not_found": "non trovato (un tasto per continuare)",
+           "hint_board": "↑↓ muovi · Spazio spunta · a tutte{actions} · Invio fatto · q esci",
+           "checked": "{n} di {tot} spuntate"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
@@ -25,7 +27,9 @@ TEXTS = {
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
            "minutes": "min", "timeout": "timed out", "would": "would", "planned": "{n} to do, nothing changed (dry run)",
            "empty": "nothing to show", "rows": "{n} rows", "row": "1 row", "open_q": "Which one?",
-           "back": "Back", "not_found": "not found (any key to go on)"},
+           "back": "Back", "not_found": "not found (any key to go on)",
+           "hint_board": "↑↓ move · Space check · a all{actions} · Enter done · q quit",
+           "checked": "{n} of {tot} checked"},
 }
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
@@ -475,6 +479,61 @@ class Screen:
                         self.draw()
                         key()
                         self.foot = ""
+        finally:
+            with self.lock:
+                self.head, self.body = saved
+            self.mode = "idle"
+            self.draw()
+
+    def board(self, b):
+        """A Board (pleiadi_cli_builder.board): in a real terminal the grouped table with check marks, filled in the
+        background, actions on one key, until Enter (returns the checked rows) or q/Esc (None). Without one: the
+        groups as plain tables once every cell has arrived; with --json the rows, each with its group."""
+        from .board import BoardView
+        if self.json or not (self.full and self.interactive):
+            b.start()
+            b.wait()
+            if not self.data(b.as_rows()):
+                for title, rows in b.groups:
+                    self.out("")
+                    self.out("  " + self.bold(title))
+                    self.table(rows, b.columns, b.titles)
+            return None
+        th = self.theme
+        view = BoardView(b, color=self.c, select=f"{th.accent};1;{th.select}", error=th.error, dim=th.dim,
+                         check=th.yes, texts=self.t)
+
+        def paint():  # also from the background cells, as each one arrives
+            with self.lock:
+                size = shutil.get_terminal_size((80, 24))
+                view.resize(size.columns, size.lines - 2)
+                self.head, self.body = [], view.render()
+            self.draw()
+        self.open()
+        saved, self.mode = (self.head, self.body), "read"
+        b.start(on_change=paint)
+        try:
+            while True:
+                self.foot = self.foot or "  " + self.keys(pairs(view.hint()))
+                paint()
+                k = key()
+                self.foot = ""
+                with self.lock:
+                    what = view.handle(k)
+                if isinstance(what, tuple):
+                    rows = view.targets()
+                    label, fn = b.actions[what[1]]
+                    try:
+                        msg = fn(self, rows) or label
+                    except Exception as e:  # an action that fails says why, the table stays open
+                        msg = f"{label}: {e}"
+                    self.foot = "  " + self.acc(th.arrow + " ") + str(msg)
+                    b.start(on_change=paint, rows=rows)  # what the action changed shows up by itself
+                    continue
+                if what == "done":
+                    return view.checked()
+                if what == "quit":
+                    return None
         finally:
             with self.lock:
                 self.head, self.body = saved
