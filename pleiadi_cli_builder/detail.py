@@ -26,8 +26,8 @@ class Detail:
 
 
 class Pager:
-    def __init__(self, detail, width=80, height=24, color=None):
-        self.d, self.width, self.height = detail, width, height
+    def __init__(self, detail, width=80, height=24, color=None, select="38;5;153;1;48;5;237"):
+        self.d, self.width, self.height, self.select = detail, width, height, select
         self.color = color or (lambda code, text: text)
         self.folded = {t for t, _, f in detail.sections if f}
         self.top, self.hits, self.hit, self.query = 0, [], 0, ""
@@ -68,14 +68,17 @@ class Pager:
             if out:
                 out.append("")
                 self.owner.append(None)
-            mark = self.color("7;1", "▶") + " " if n == self.cur else "  "
             self.heads.append(len(out))
-            if title in self.folded:
-                out.append(mark + self.color("1", f"▸ {title}") + self.color("2", f" ({len(items)} righe)"))
-                self.owner.append(title)
-                continue
-            out.append(mark + self.color("1", f"▾ {title}"))
+            text = f"▸ {title}" + f" ({len(items)} righe)" if title in self.folded else f"▾ {title}"
+            if n == self.cur:  # the section Space acts on: a bar across the width, like a selected row
+                out.append(self.color(self.select, ("▶ " + text).ljust(self.width)))
+            elif title in self.folded:
+                out.append("  " + self.color("1", f"▸ {title}") + self.color("2", f" ({len(items)} righe)"))
+            else:
+                out.append("  " + self.color("1", f"▾ {title}"))
             self.owner.append(title)
+            if title in self.folded:
+                continue
             for text, tone in items:
                 for raw in str(text).split("\n"):
                     for w in textwrap.wrap(raw, max(10, self.width - 2), break_long_words=True,

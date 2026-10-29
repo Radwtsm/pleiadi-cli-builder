@@ -128,7 +128,8 @@ class FullScreen(unittest.TestCase):
         self.assertEqual(os.waitstatus_to_exitcode(status), 0, data[-400:])
         self.assertIn(b"USCITO", data)
         self.assertIn(b"nota 2", data)  # the search opened the folded section
-        self.assertIn("/ cerca".encode(), data)  # the read-mode hint, not the menu one
+        import re
+        self.assertIn("/ cerca", re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", data.decode("utf-8", "replace")))  # read-mode hint
 
 
 if __name__ == "__main__":

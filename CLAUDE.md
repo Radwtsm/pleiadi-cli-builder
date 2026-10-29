@@ -13,3 +13,7 @@ percorsi privati, mai codice o dati di chi la usa (un tool aziendale vive nel re
   `gh release create` con i due file (il README rimanda a `releases/latest`).
 - Output pensato anche per Claude (che legge ogni riga a token): righe brevi, ✓/✗ con cosa fare, un riepilogo;
   i dati con `--json`. Mai log interi a schermo: l'ultima riga utile, il resto in un file.
+- Colori per ruolo, come Claude Code (`Theme`, mai codici scritti a mano fuori da lì): un solo accento per ciò che è
+  interattivo o selezionato; `dim` per il secondario (bordi, note, descrizioni dei tasti); `ok`/`warn`/`error`
+  solo per un significato. Riga selezionata = barra su tutta la larghezza (`select`); nei suggerimenti il tasto in
+  accento e grassetto, cosa fa attenuato (`screen.keys`); tabelle con titoli in grassetto e una riga sotto.

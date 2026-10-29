@@ -7,7 +7,7 @@ sys.path.insert(0, ROOT)
 from pleiadi_cli_builder import Detail, ReadOnlyClient, credentials, term
 from pleiadi_cli_builder.detail import Pager
 
-plain = lambda l: term.ANSI.sub("", l)
+plain = lambda l: term.ANSI.sub("", l).rstrip()  # the marked title is a bar padded to the width
 
 
 def detail(actions=None):

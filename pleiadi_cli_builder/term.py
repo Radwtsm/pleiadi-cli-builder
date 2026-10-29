@@ -10,7 +10,7 @@ WIN, MAC = os.name == "nt", sys.platform == "darwin"
 TEXTS = {
     "it": {"hint": "↑↓ scegli · Invio conferma · Ctrl+C esci", "hint_resume": "riprende da dove eri",
            "hint_idle": "Ctrl+C esci", "hint_type": "scrivi · Invio conferma · Ctrl+C esci",
-           "hint_read": "↑↓ PgSu PgGiù scorri · Inizio Fine · / cerca · n successiva · Spazio apre/chiude · q chiudi",
+           "hint_read": "↑↓ PgSu PgGiù scorri · Inizio/Fine salta · / cerca · n successiva · Spazio apre/chiude · q chiudi",
            "recommended": "(consigliata)", "type_number": "Scrivi il numero e premi Invio:", "yes": "Sì", "no": "No",
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
            "ok_count": "{ok}/{tot} a posto", "rerun": "rilancia `{name}`: salta ciò che è già fatto",
@@ -19,7 +19,7 @@ TEXTS = {
            "back": "Indietro", "not_found": "non trovato (un tasto per continuare)"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
-           "hint_read": "↑↓ PgUp PgDn scroll · Home End · / search · n next · Space fold · q close",
+           "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
            "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
            "ok_count": "{ok}/{tot} ok", "rerun": "run `{name}` again: it skips what is already done",
@@ -39,10 +39,14 @@ class Theme:
     SAFE = dict(spinner="|/-\\", mark="*", step="●", attach="└", arrow="→", prompt=">", yes="√", no="x",
                 corners="┌┐└┘")
 
-    def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1", glyphs=None, **marks):
+    def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1", glyphs=None, warn="33",
+                 select="48;5;237", **marks):
         """glyphs = "full" or "safe"; default: safe in the classic Windows console (no Windows Terminal),
         PCB_GLYPHS=safe|full to choose. marks = any of spinner, mark, step, attach, arrow, prompt, yes, no, corners."""
+        # roles, like Claude Code: one accent for what is interactive or selected; dim for what is secondary
+        # (borders, hints, notes); ok/warn/error only for a meaning; select = the background of the selected row
         self.accent, self.ok, self.error, self.dim, self.bold = accent, ok, error, dim, bold
+        self.warn, self.select = warn, select
         glyphs = glyphs or os.environ.get("PCB_GLYPHS") or ("safe" if WIN and not os.environ.get("WT_SESSION") else "full")
         for k, v in {**(self.SAFE if glyphs == "safe" else self.FULL), **marks}.items():
             setattr(self, k, v)
@@ -52,6 +56,16 @@ class Theme:
         """"#e8253f" → "38;2;232;37;63" (truecolor foreground)."""
         h = hex_color.lstrip("#")
         return "38;2;" + ";".join(str(int(h[i:i + 2], 16)) for i in (0, 2, 4))
+
+
+def pairs(hint):
+    """«↑↓ scegli · Invio conferma» → [("↑↓", "scegli"), ("Invio", "conferma")]: the last word says what the keys
+    before it do; a single word is only a label."""
+    out = []
+    for part in hint.split(" · "):
+        words = part.split(" ")
+        out.append((" ".join(words[:-1]), words[-1]) if len(words) > 1 else ("", part))
+    return out
 
 
 def visible_len(s):
@@ -272,7 +286,7 @@ class Screen:
             self.size = shutil.get_terminal_size((80, 24))
             w, h = self.size.columns, self.size.lines
             head = [clip(r, w) for r in self.head] if h >= len(self.head) + 8 else []
-            foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or self.dim("  " + self.hint()), w)]
+            foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or "  " + self.hint_line(), w)]
             room = max(1, h - len(head) - len(foot))
             body = [clip(r, w) for r in self.body[-room:]]
             body += [""] * (room - len(body))
@@ -296,6 +310,19 @@ class Screen:
         h = self.t.get({"choose": "hint", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
         st = status_line()
         return h + (f" · {st}" if st else "")
+
+    def keys(self, items):
+        """[(keys, what they do)] → «↑↓ scegli · Invio conferma»: keys in the accent, bold; what they do, muted."""
+        sep = self.dim(" · ")
+        return sep.join((self.c(f"{self.theme.accent};1", k) if k else "") + self.dim((" " if k else "") + label)
+                        for k, label in items)
+
+    def hint_line(self):
+        """The bottom line: the keys of this moment, then the open accesses (muted)."""
+        from .access import status_line
+        h = self.t.get({"choose": "hint", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
+        st = status_line()
+        return self.keys(pairs(h)) + (self.dim(f" · {st}") if st else "")
 
     # ── colors ──
     def c(self, code, text):
@@ -324,7 +351,7 @@ class Screen:
             self.open()
             self.draw()
         else:
-            self.box(lines + [self.dim(f"  {self.t['hint_idle']} ({self.t['hint_resume']})")])
+            self.box(lines + ["  " + self.keys(pairs(self.t["hint_idle"])) + self.dim(f" ({self.t['hint_resume']})")])
 
     def frame(self, lines):
         vis = [visible_len(r) for r in lines]
@@ -399,6 +426,7 @@ class Screen:
             i = self.choose(self.t["open_q"], [line(b) for b in body] + [self.t["back"]], header=line(head))
             return i if i < len(rows) else None
         self.out("    " + self.bold(line(head)))
+        self.out("    " + self.dim("─" * len(line(head))))  # titles apart from the data, at a glance
         for b in body:
             self.out("    " + line(b))
         self.out("    " + count)
@@ -424,7 +452,7 @@ class Screen:
                 pager.resize(size.columns, size.lines - 2)  # rewraps when the window changes
                 with self.lock:
                     self.head, self.body = [], pager.render()
-                self.foot = self.foot or self.dim("  " + pager.hint())
+                self.foot = self.foot or "  " + self.keys(pairs(pager.hint()))
                 self.draw()
                 what = pager.handle(key())
                 self.foot = ""
@@ -578,16 +606,21 @@ class Screen:
         return self.choose(question, [yes or self.t["yes"], no or self.t["no"]]) == 0
 
     def _menu_row(self, i, o, sel, n, rec):
-        """One option, its number right-aligned (1..n) so that texts start in the same column as the header."""
+        """One option, its number right-aligned (1..n) so that texts start in the same column as the header. The
+        selected one is a bar across the width (accent on a dark background), like Claude Code's."""
         nw = len(str(n))
         w = self.text_width() - 6 - nw
         o = o if len(o) <= w else o[:w - 1] + "…"  # one line per option, even on a narrow screen
-        note = self.dim(rec) if rec and i == 0 and len(o) + len(rec) + 1 <= w else ""
+        has_note = rec and i == 0 and len(o) + len(rec) + 1 <= w
         num = f"{i + 1:>{nw}}."
-        return (self.acc(f"  {self.theme.prompt} {num} {o}") if i == sel else f"    {num} {o}") + note
+        if i == sel:
+            bar = f"  {self.theme.prompt} {num} {o}" + (rec if has_note else "")
+            return self.c(f"{self.theme.accent};1;{self.theme.select}", bar.ljust(self.text_width()))
+        return self.dim(f"    {num} ") + o + (self.dim(rec) if has_note else "")
 
     def _menu_header(self, header, n):
-        return " " * (4 + len(str(n)) + 2) + self.bold(header)
+        pad = " " * (4 + len(str(n)) + 2)
+        return pad + self.bold(header) + "\n" + pad + self.dim("─" * visible_len(header))
 
     def _menu(self, options, recommend=True):
         rec = "  " + self.t["recommended"] if recommend else ""
