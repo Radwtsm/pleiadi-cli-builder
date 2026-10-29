@@ -156,6 +156,7 @@ class Screen:
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
+        self.suspended = False
         self.head, self.body, self.foot, self.last = [], [], "", []
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
 
@@ -198,10 +199,12 @@ class Screen:
     def suspend(self):
         """For a program that talks to the person by itself (a login, an installer): normal screen."""
         if self.opened:
+            self.suspended = True  # nothing draws over the program (or the hidden prompt) meanwhile
             sys.stdout.write("\033[?25h\033[?1049l")
             sys.stdout.flush()
 
     def resume(self):
+        self.suspended = False
         if self.opened:
             sys.stdout.write("\033[?1049h\033[?25l")
             self.size = None
@@ -219,7 +222,7 @@ class Screen:
         self.draw()
 
     def draw(self):
-        if not self.opened:
+        if not self.opened or self.suspended:
             return
         with self.lock:
             self.size = shutil.get_terminal_size((80, 24))
@@ -658,6 +661,8 @@ class Wait:
         def spin():
             i = 0
             while not self.stop.wait(0.12):
+                if s.suspended or s.mode in ("choose", "type"):  # a question is on screen: the spinner waits
+                    continue
                 ln = self.line(s.theme.spinner[i % len(s.theme.spinner)])
                 if s.full:
                     s.foot = ln

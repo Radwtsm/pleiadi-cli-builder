@@ -12,7 +12,7 @@ from pm_kit.__main__ import app
 
 TODAY = datetime.date.today()
 D = lambda days: (TODAY + datetime.timedelta(days=days)).isoformat()
-KEY = "fake-api-key-for-tests-0001"
+KEY = "".join("0123456789abcdef"[i % 16] for i in range(40))  # invented: 40 hex, like a Redmine key
 PROJECTS = [{"id": 1, "name": "Sito nuovo", "identifier": "sito", "status": 1, "updated_on": D(-1) + "T10:00:00Z"},
             {"id": 2, "name": "App interna", "identifier": "app", "status": 1, "updated_on": D(-20) + "T10:00:00Z"},
             {"id": 3, "name": "Archivio", "identifier": "archivio", "status": 1, "updated_on": D(-90) + "T10:00:00Z"}]
@@ -301,6 +301,22 @@ class Commands(unittest.TestCase):
         code, out, err = quiet(lambda: app.main(["riepilogo", "--json"]))
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["aperte"], 2)
+
+    def test_wrong_key_is_asked_again_on_the_spot(self):
+        credentials.keychain().set("pm-kit.redmine", "anna", "f" * 40)  # stored but refused (401)
+        with mock.patch("pleiadi_cli_builder.term.Screen.interactive", new=True), \
+             mock.patch("pleiadi_cli_builder.term.Screen.confirm", lambda self, q, y=None, n=None: True), \
+             mock.patch("pleiadi_cli_builder.term.Screen.secret_input", lambda self, q: KEY):
+            code, out, err = quiet(lambda: app.main(["mie"]))
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("Home page", out)
+        self.assertEqual(credentials.keychain().get("pm-kit.redmine", "anna"), KEY)
+
+    def test_wrong_key_without_terminal_says_how(self):
+        credentials.keychain().set("pm-kit.redmine", "anna", "f" * 40)
+        code, out, err = quiet(lambda: app.main(["mie"]))
+        self.assertEqual(code, 1)
+        self.assertIn("pm-kit setup", out + err)
 
     def set_config(self, **kv):
         cfg = os.environ["PM_KIT_CONFIG"]

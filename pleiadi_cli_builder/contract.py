@@ -81,11 +81,11 @@ def tests(app, source=None):
         del proc.REFUSED[refused:]
         return out.getvalue(), err.getvalue(), applied
 
-    def dry_test(c):
+    def dry_test(c, words):
         def test(self):
             home = tempfile.mkdtemp()
             try:
-                _, err, applied = run_cmd([c.name, *c.example, "--prova"], home)
+                _, err, applied = run_cmd([*words, *c.example, "--prova"], home)
                 self.assertEqual(applied, [], f"`{c.name} --prova` applied or tried to write: {applied}")
                 made = [p for p in _tree(home) if not p.startswith(".state-outside")]
                 self.assertEqual(made, [], f"`{c.name} --prova` wrote {made}\n{err[-500:]}")
@@ -93,11 +93,11 @@ def tests(app, source=None):
                 shutil.rmtree(home, ignore_errors=True)
         return test
 
-    def json_test(c):
+    def json_test(c, words):
         def test(self):
             home = tempfile.mkdtemp()
             try:
-                out, err, _ = run_cmd([c.name, *c.example, "--json"], home)
+                out, err, _ = run_cmd([*words, *c.example, "--json"], home)
                 try:
                     json.loads(out)
                 except ValueError:
@@ -114,10 +114,13 @@ def tests(app, source=None):
                          + "\n".join(f"{f}:{n}: {l}" for f, n, l in found))
 
     body = {"test_no_code_loading": code_test}
-    for c in app.commands.values():
-        key = re.sub(r"\W", "_", c.name)
-        if c.effects:
-            body[f"test_dry_run_{key}"] = dry_test(c)
+    entries = [([c.name], c) for c in app.commands.values()]
+    for sec, sub in getattr(app, "sections", {}).items():
+        entries += [([sec, sub.renamed.get(c.name, c.name)], c) for c in sub.commands.values()]
+    for words, c in entries:
+        key = re.sub(r"\W", "_", "_".join(words))
+        if c.dry:
+            body[f"test_dry_run_{key}"] = dry_test(c, words)
         if c.json:
-            body[f"test_json_{key}"] = json_test(c)
+            body[f"test_json_{key}"] = json_test(c, words)
     return type("Contract_" + re.sub(r"\W", "_", app.name), (unittest.TestCase,), body)

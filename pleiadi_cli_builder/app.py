@@ -1,6 +1,6 @@
 """An App = name + look + commands. No arguments: the interactive menu (or the first-run command); `help`: the
 usage generated from the commands; state kept per computer in ~/.config/<name>/state.json (never secrets)."""
-import json, os, re, sys, time
+import json, os, re, sys, textwrap, time
 
 from . import access, proc
 from .term import MAC, WIN, Screen, Theme
@@ -54,9 +54,9 @@ def write_json(path, data):
 
 
 class Command:
-    def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=()):
+    def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=(), dry=True):
         self.name, self.fn, self.help, self.menu, self.args, self.effects = name, fn, help, menu, args, effects
-        self.json, self.example = json, list(example)
+        self.json, self.example, self.dry = json, list(example), dry and effects
 
 
 class App:
@@ -75,6 +75,7 @@ class App:
         session_idle_minutes = in the interactive menu, an access (VPN) stays open between actions and closes
         after this many minutes without actions (always on exit)."""
         self.session_idle_minutes, self._memory = session_idle_minutes, {}
+        self.sections, self.prog, self.renamed = {}, name, {}  # prog/renamed: how the host calls this App
         self.name, self.title, self.lang = name, title or name, lang
         self.write_commands = [list(w) for w in write_commands]
         self.theme = theme or Theme(**({"accent": Theme.rgb(accent) if accent.startswith("#") else accent} if accent else {}))
@@ -170,30 +171,72 @@ class App:
         return HELP.get(self.lang, HELP["en"])[8].format(when=when)
 
     # ── commands ──
-    def command(self, name, help="", menu=None, args="", effects=True, json=False, example=()):
+    def include(self, other, name, title=None, rename=None):
+        """Another App as a section of this one: `tool NAME COMMAND`, a sub-menu in the menu, its commands in help.
+        rename = {its command: name here} (e.g. setup → configure, so they don't clash with this tool's). Its
+        snapshots and state stay its own (other.cache_dir, other.state_path): set them if the host wants them."""
+        other.prog, other.renamed, other.section_title = f"{self.prog} {name}", dict(rename or {}), title or name
+        self.sections[name] = other
+        return other
+
+    def cmd(self, command):
+        """How the person types `command` here: "tool task configure" inside a host, "tracker setup" alone —
+        for messages like «first run `…`»."""
+        return f"{self.prog} {self.renamed.get(command, command)}"
+
+    def local(self, typed):
+        """The Command the person typed (a renamed one by its new name), or None."""
+        back = {v: k for k, v in self.renamed.items()}
+        if typed in self.renamed:  # renamed away: the old name no longer exists here
+            return None
+        return self.commands.get(back.get(typed, typed))
+
+    def command(self, name, help="", menu=None, args="", effects=True, json=False, example=(), dry=True):
         """menu = the text in the interactive menu (None = not in the menu); args = usage shown in help.
         effects=False declares a read-only command: its steps can only check (enforced in run_steps). A command
         with effects gets --prova/--dry-run: screen.dry is True and run_steps only says what it would do.
         json=True: the command prints its data with screen.table and supports --json; example = sample arguments
-        for the contract tests (pleiadi_cli_builder.contract)."""
+        for the contract tests (pleiadi_cli_builder.contract). dry=False: no --prova here (the command forwards to a
+        program with its own dry run): the flag is passed through untouched."""
         def add(fn):
-            self.commands[name] = Command(name, fn, help, menu, args, effects, json, example)
+            self.commands[name] = Command(name, fn, help, menu, args, effects, json, example, dry)
             return fn
         return add
 
     def screen(self):
         return Screen(self.name, self.title, self.theme, self.lang)
 
-    def usage(self):
+    def _rows(self):
         t = HELP.get(self.lang, HELP["en"])
-        rows = [(f"{self.name} {c.name}" + (f" {c.args}" if c.args else "") + (f" [{t[7]}]" if c.effects else ""),
+        rows = [(self.cmd(c.name) + (f" {c.args}" if c.args else "") + (f" [{t[7]}]" if c.dry else ""),
                  c.help + (f" ({t[6]})" if not c.effects else "")) for c in self.commands.values()]
-        w = max([len(r[0]) for r in rows] + [10]) + 2
-        return "\n".join([f"{self.title} — {t[0]} ({t[1]})", ""] + [f"  {a:<{w}}{b}" for a, b in rows])
+        for name, sub in self.sections.items():
+            rows.append(("", ""))
+            rows.append((f"{self.prog} {name} …", sub.section_title))
+            rows += sub._rows()
+        return rows
+
+    def usage(self):
+        """Commands and their help; a command whose arguments are long gets its help on the line below, so the
+        short ones stay readable and nothing goes off screen."""
+        t = HELP.get(self.lang, HELP["en"])
+        rows = self._rows()
+        w = min(34, max([len(a) for a, _ in rows] + [10])) + 2
+        out = [f"{self.title} — {t[0]} ({t[1]})", ""]
+        for a, b in rows:
+            if not a:
+                out.append("")
+            elif len(a) <= w - 2:
+                out.append(f"  {a:<{w}}{b}")
+            else:
+                out += [f"  {line}" for line in textwrap.wrap(a, 96, subsequent_indent="    ")] + [" " * (w + 2) + b]
+        return "\n".join(out)
 
     def menu(self, screen):
         t = HELP.get(self.lang, HELP["en"])
         items = [c for c in self.commands.values() if c.menu]
+        for name, sub in self.sections.items():  # a section = one item that opens its own menu
+            items.append(Command(name, lambda s, a, sub=sub: sub.menu(s), menu=f"{sub.section_title} ›", effects=False))
         code = 0
         screen.clear()
         screen.header(self.menu_subtitle)
@@ -224,7 +267,16 @@ class App:
                     self.save_state(first_run_done=True)
                     return code
                 return self.menu(screen)
-            c = self.commands.get(argv[0])
+            if argv[0] in self.sections:
+                sub = self.sections[argv[0]]
+                if len(argv) == 1:
+                    return sub.menu(screen)
+                c = sub.local(argv[1])
+                if not c:
+                    print(f"{t[5]}: {' '.join(argv[:2])}\n\n{sub.usage()}", file=sys.stderr)
+                    return 2
+                return sub.call(c, screen, argv[2:])
+            c = self.local(argv[0])
             if not c:
                 print(f"{t[5]}: {argv[0]}\n\n{self.usage()}", file=sys.stderr)
                 return 2
@@ -239,14 +291,15 @@ class App:
 
     def call(self, c, screen, args):
         screen.read_only = not c.effects
-        screen.dry = c.effects and any(a in DRY_FLAGS for a in args)
+        screen.dry = c.dry and any(a in DRY_FLAGS for a in args)
         screen.json = JSON_FLAG in args
         screen.refresh = any(a in REFRESH_FLAGS for a in args)
         if screen.json:
             screen.full = False  # data for another program: plain lines on stderr, JSON on stdout
         proc.POLICY.update(write_commands=self.write_commands, read_only=screen.read_only, dry=screen.dry)
         try:
-            return c.fn(screen, [a for a in args if a not in DRY_FLAGS + REFRESH_FLAGS and a != JSON_FLAG]) or 0
+            drop = (DRY_FLAGS if c.dry else ()) + REFRESH_FLAGS + (JSON_FLAG,)
+            return c.fn(screen, [a for a in args if a not in drop]) or 0
         finally:
             screen.read_only = screen.dry = screen.json = screen.refresh = False
             proc.POLICY.update(read_only=False, dry=False)

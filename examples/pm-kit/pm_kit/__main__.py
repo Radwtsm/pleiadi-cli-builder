@@ -49,7 +49,7 @@ def vpn(cfg, screen):
 
 def why(e):
     if isinstance(e, HTTPError):
-        return {401: "HTTP 401: chiave API sbagliata o scaduta (rifai `pm-kit setup`)",
+        return {401: f"HTTP 401: chiave API sbagliata o scaduta (rifai `{app.cmd('setup')}`)",
                 403: "HTTP 403: la tua utenza non vede questi dati"}.get(e.status, str(e))
     return f"Redmine non risponde ({getattr(e, 'reason', e)}): VPN accesa? indirizzo giusto?"
 
@@ -62,9 +62,28 @@ def connect(screen):
     """(cfg, token) or (None, reason)."""
     cfg = config()
     if not cfg:
-        return None, f"Prima `pm-kit setup`: manca {config_path()}"
+        return None, f"Prima `{app.cmd('setup')}`: manca {config_path()}"
     token = secret(SERVICE, cfg.get("user", "default"), screen, ASK_KEY, validate=KEY_FORMAT)
-    return (cfg, token) if token else (None, "Manca la chiave API: `pm-kit setup`")
+    return (cfg, token) if token else (None, f"Manca la chiave API: `{app.cmd('setup')}`")
+
+
+def with_key(screen, cfg, action):
+    """action(token) with the stored key; a key Redmine refuses (401) is asked again on the spot — in the menu
+    the tool never closes or gets stuck on a wrong key. Without someone at the terminal: the error, as before."""
+    user = cfg.get("user", "default")
+    token = secret(SERVICE, user, screen, ASK_KEY, validate=KEY_FORMAT)
+    for attempt in range(3):
+        try:
+            return action(token)
+        except HTTPError as e:
+            if e.status != 401 or attempt == 2 or not screen.interactive or screen.json or not screen.confirm(
+                    "Redmine ha rifiutato la chiave API (sbagliata o scaduta). La reimposto adesso?",
+                    "Sì, inserisco la chiave", "No, torna indietro"):
+                raise
+            credentials.forget(SERVICE, user)
+            token = secret(SERVICE, user, screen, ASK_KEY, validate=KEY_FORMAT)
+            if not token:
+                raise
 
 
 def download(screen, name, cfg, fetch, refresh_minutes):
@@ -85,15 +104,16 @@ def everything(screen, args):
     wanted = "--tutti" in args or cfg.get("ruolo") == "pm" or (have and not screen.refresh)
     if not wanted and screen.interactive and not screen.json:
         wanted = not screen.confirm("Questo scarica tutti i progetti e le task di tutti: è pesante e serve a chi "
-                                    "segue i progetti. Cosa faccio?", "Niente: mi bastano le mie task (pm-kit mie)",
+                                    "segue i progetti. Cosa faccio?", f"Niente: mi bastano le mie task ({app.cmd('mie')})",
                                     "Scarica tutto")
     if not wanted:
         return None, ("Scaricare tutto Redmine serve a chi segue i progetti: aggiungi --tutti (o \"ruolo\": \"pm\" nella "
-                      "configurazione). Per le tue task: pm-kit mie; per cercarne altre: pm-kit task --progetto …")
+                      f"configurazione). Per le tue task: {app.cmd('mie')}; per cercarne altre: {app.cmd('task')} --progetto …")
 
     def fetch():
         with vpn(cfg, screen), screen.wait("scarico tutto da Redmine"):
-            return redmine.fetch_all(client(cfg, token), datetime.date.today(), only=cfg.get("progetti"))
+            return with_key(screen, cfg, lambda t: redmine.fetch_all(client(cfg, t), datetime.date.today(),
+                                                                    only=cfg.get("progetti")))
     return download(screen, "redmine", cfg, fetch, 10)
 
 
@@ -104,7 +124,7 @@ def mine(screen):
 
     def fetch():
         with vpn(cfg, screen), screen.wait("scarico le mie task"):
-            return redmine.fetch_mine(client(cfg, token))
+            return with_key(screen, cfg, lambda t: redmine.fetch_mine(client(cfg, t)))
     return download(screen, "mie", cfg, fetch, 2)
 
 
@@ -170,7 +190,7 @@ def task_cmd(screen, args):
         return failed(screen, token, [])
     try:
         with vpn(cfg, screen), screen.wait("cerco su Redmine"):
-            found, cut = redmine.search(client(cfg, token), query)
+            found, cut = with_key(screen, cfg, lambda t: redmine.search(client(cfg, t), query))
     except ERRORS as e:
         return failed(screen, why(e), [])
     if cut:
@@ -183,7 +203,7 @@ def task_cmd(screen, args):
              menu=None, effects=False, json=True, example=["101"])
 def issue_cmd(screen, args):
     if not args or not args[0].lstrip("#").isdigit():
-        failed(screen, "Uso: pm-kit issue NUMERO", {})
+        failed(screen, f"Uso: {app.cmd('issue')} NUMERO", {})
         return 2
     number = args[0].lstrip("#")
     cfg, token = connect(screen)
@@ -192,9 +212,10 @@ def issue_cmd(screen, args):
     me = (app._memory.get("mie") or read_json(os.path.join(app.cache_dir, "mie.json")) or {}).get("data", {}).get("user")
     try:
         with vpn(cfg, screen), screen.wait(f"apro la task {number}"):
-            api = client(cfg, token)
-            issue, statuses = redmine.fetch_issue(api, number)
-            me = me or (api.get("/users/current.json") or {}).get("user")
+            def read(t):
+                api = client(cfg, t)
+                return redmine.fetch_issue(api, number) + ((me or (api.get("/users/current.json") or {}).get("user")),)
+            issue, statuses, me = with_key(screen, cfg, read)
     except HTTPError as e:
         return failed(screen, f"Task {number} non trovata (o non visibile per te)" if e.status == 404 else why(e), {})
     except ERRORS as e:
@@ -220,7 +241,7 @@ def progetti(screen, args):
              effects=False, json=True, example=["sito"])
 def stato(screen, args):
     if not [a for a in args if a != "--tutti"]:
-        return failed(screen, "Uso: pm-kit stato PROGETTO (l'identificativo è in `pm-kit progetti --json`)", {})
+        return failed(screen, f"Uso: {app.cmd('stato')} PROGETTO (l'identificativo è in `{app.cmd('progetti')} --json`)", {})
     data, when = everything(screen, args)
     if data is None:
         return failed(screen, when, {})
@@ -228,7 +249,7 @@ def stato(screen, args):
         st = redmine.project_status([a for a in args if a != "--tutti"][0], data["projects"], data["open"],
                                     datetime.date.today())
     except KeyError:
-        return failed(screen, f"Nessun progetto attivo «{[a for a in args if a != '--tutti'][0]}»: gli identificativi sono in `pm-kit progetti --json`", {})
+        return failed(screen, f"Nessun progetto attivo «{[a for a in args if a != '--tutti'][0]}»: gli identificativi sono in `{app.cmd('progetti')} --json`", {})
     if screen.data(st):
         return 0
     screen.section(st["progetto"])
@@ -293,9 +314,9 @@ def steps(screen):
         except ERRORS + (KeyError, TypeError) as e:
             return False, why(e)
     out = [Step("configurazione", lambda: config() is not None, apply=write_config,
-                fix=f"Scrivi {path} con url e user (vedi `pm-kit help`)", plan=f"scrivo {path}"),
+                fix=f"Scrivi {path} con url e user (vedi `{app.prog} help`)", plan=f"scrivo {path}"),
            Step("chiave API nel portachiavi", lambda: bool(stored_key(config())), apply=ask_key,
-                fix="`pm-kit setup` la chiede una volta", plan="chiedo la chiave e la salvo nel portachiavi"),
+                fix=f"`{app.cmd('setup')}` la chiede una volta", plan="chiedo la chiave e la salvo nel portachiavi"),
            Step("VPN", vpn_known, apply=ask_vpn, plan=f"chiedo se serve la VPN e la scrivo in {path}",
                 fix=f'In {path}: "vpn": null se non serve, oppure "vpn": {{"up": [...], "down": [...], "status": [...]}}'),
            Step("Redmine risponde", reaches)]
@@ -319,7 +340,7 @@ def steps(screen):
 def copia(screen, args):
     cfg = config()
     if not cfg or not args or args[0] not in ("si", "sì", "no", "cancella"):
-        screen.todo("Uso: pm-kit copia si | no | cancella (prima `pm-kit setup`)")
+        screen.todo(f"Uso: {app.cmd('copia')} si | no | cancella (prima `{app.cmd('setup')}`)")
         return 2
     if args[0] == "cancella":
         infos = [i for i in (app.snapshot_info(n) for n in COPIES) if i]
@@ -334,7 +355,7 @@ def copia(screen, args):
         screen.info(f"farei: copia_locale = {keep} in {config_path()}")
         return 0
     write_json(config_path(), {**cfg, "copia_locale": keep})
-    screen.info("copia locale attiva" if keep else "copia locale disattivata: `pm-kit copia cancella` toglie quella vecchia")
+    screen.info("copia locale attiva" if keep else f"copia locale disattivata: `{app.cmd('copia')} cancella` toglie quella vecchia")
     return 0
 
 
