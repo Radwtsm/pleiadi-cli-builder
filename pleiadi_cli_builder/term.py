@@ -103,7 +103,10 @@ def key():
         import msvcrt
         k = msvcrt.getwch()
         if k in ("\x00", "\xe0"):
-            return {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home", "O": "end"}.get(msvcrt.getwch(), "")
+            return {"H": "up", "P": "down", "I": "pgup", "Q": "pgdn", "G": "home", "O": "end",
+                    "\x0f": "backtab"}.get(msvcrt.getwch(), "")
+        if k == "\t":
+            return "tab"
         if k == "\x1b":
             return "esc"
     else:
@@ -131,7 +134,7 @@ def key():
                 termios.tcsetattr(fd, termios.TCSADRAIN, before)
         k = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down", "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
              "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[F": "end", "\x1bOF": "end",
-             "\x1b[4~": "end"}.get(k, k)
+             "\x1b[4~": "end", "\x1b[Z": "backtab", "\t": "tab"}.get(k, k)
     if k == "\x03":
         raise KeyboardInterrupt
     if k in ("\x7f", "\x08"):
@@ -419,8 +422,18 @@ class Screen:
                 pager.resize(size.columns, size.lines - 2)  # rewraps when the window changes
                 with self.lock:
                     self.head, self.body = [], pager.render()
+                self.foot = self.foot or self.dim("  " + pager.hint())
                 self.draw()
                 what = pager.handle(key())
+                self.foot = ""
+                if isinstance(what, tuple):  # a one-key action: its message stays until the next key
+                    label, fn = d.actions[what[1]]
+                    try:
+                        msg = fn(self) or label
+                    except Exception as e:  # an action that fails says why, the view stays open
+                        msg = f"{label}: {e}"
+                    self.foot = "  " + self.acc(self.theme.arrow + " ") + str(msg)
+                    continue
                 if what == "quit":
                     break
                 if what == "search":

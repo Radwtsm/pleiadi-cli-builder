@@ -111,6 +111,36 @@ class ReadOnlyClient:
             self.sent = self.sent[1:]
         self.sent.append(time.time())
 
+    def download(self, url, dest):
+        """A file (an attachment) into `dest`, read-only like everything here: only from this client's own server
+        (the key never goes to another host), written to dest.tmp then moved. Returns its size in bytes."""
+        if url.startswith("/"):
+            url = self.base + url
+        mine, theirs = urllib.parse.urlparse(self.base), urllib.parse.urlparse(url)
+        if (theirs.scheme, theirs.netloc) != (mine.scheme, mine.netloc):
+            raise ValueError(f"not downloaded: {theirs.netloc or url} is not {mine.netloc}")
+        import os
+        self._throttle()
+        os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+        req = urllib.request.Request(url, headers={**self.headers, "Accept": "*/*"}, method="GET")
+        size = 0
+        try:
+            with self.opener.open(req, timeout=self.timeout) as r, open(dest + ".tmp", "wb") as f:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    size += len(chunk)
+            os.replace(dest + ".tmp", dest)
+        except urllib.error.HTTPError as e:
+            e.close()
+            raise HTTPError(e.code, url.split("?")[0]) from None
+        finally:
+            if os.path.exists(dest + ".tmp"):
+                os.remove(dest + ".tmp")
+        return size
+
     def pages(self, path, params=None, items="items", limit=100, limit_param="limit", offset_param="offset",
               total="total_count", max_items=10000):
         """Every item of a paged list (offset/limit style, with the total in `total`), up to max_items."""

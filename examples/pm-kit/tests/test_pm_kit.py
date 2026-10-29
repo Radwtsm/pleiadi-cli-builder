@@ -69,8 +69,17 @@ class FakeRedmine(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
         if url.path == "/issues/101.json":
-            self.assertion = q.get("include", "")
-            return self.send(200, DETAIL) if "journals" in q.get("include", "") else self.send(400)
+            if "journals" not in q.get("include", ""):
+                return self.send(400)
+            d = json.loads(json.dumps(DETAIL))
+            for a in d["issue"]["attachments"]:  # Redmine gives absolute links to its own host
+                a["content_url"] = f"http://{self.headers['Host']}/attachments/download/1/{a['filename']}"
+            return self.send(200, d)
+        if url.path.startswith("/attachments/download/"):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"PNG-fake" * 100)
+            return
         if url.path == "/issue_statuses.json":
             return self.send(200, STATUSES)
         if url.path.startswith("/issues/") and url.path.endswith(".json"):
@@ -190,7 +199,7 @@ class Commands(unittest.TestCase):
         self.home = tempfile.mkdtemp()
         cfg = os.path.join(self.home, "pm-kit.json")
         with open(cfg, "w") as f:
-            json.dump({"url": f"http://127.0.0.1:{self.srv.server_port}", "user": "anna", "vpn": None}, f)
+            json.dump({"url": f"http://127.0.0.1:{self.srv.server_port}", "user": "anna", "vpn": None, "cartella_download": os.path.join(self.home, "dl")}, f)
         credentials.KEYCHAIN = credentials.MemoryOnly()
         credentials.keychain().set("pm-kit.redmine", "anna", KEY)
         self.env = mock.patch.dict(os.environ, {"PM_KIT_CONFIG": cfg})
@@ -318,6 +327,38 @@ class Commands(unittest.TestCase):
         code, out, err = quiet(lambda: app.main(["mie"]))
         self.assertEqual(code, 1)
         self.assertIn("pm-kit setup", out + err)
+
+    def test_attachments_into_issue_folder(self):
+        dl = os.path.join(self.home, "scaricati")
+        self.set_config(cartella_download=dl)
+        code, out, err = quiet(lambda: app.main(["allegati", "101", "--prova"]))
+        self.assertEqual(code, 0, err)
+        self.assertIn("bozza.png", out)
+        self.assertFalse(os.path.exists(dl))
+        code, out, err = quiet(lambda: app.main(["allegati", "101"]))
+        self.assertEqual(code, 0, out + err)
+        with open(os.path.join(dl, "101", "bozza.png"), "rb") as f:
+            self.assertEqual(f.read(8), b"PNG-fake")
+        self.assertIn(os.path.join(dl, "101"), out)
+
+    def test_issue_view_actions(self):
+        from pm_kit.__main__ import issue_actions
+        from pleiadi_cli_builder import credentials as cr
+        got = []
+        cr.CLIPBOARD = {"read": lambda: "", "clear": lambda: None, "write": got.append}
+        try:
+            acts = issue_actions(DETAIL["issue"])
+            self.assertEqual(sorted(acts), ["c", "d"])
+            acts["c"][1](None)
+            self.assertEqual(got, ["#101"])
+        finally:
+            cr.CLIPBOARD = None
+
+    def test_setup_asks_for_download_folder(self):
+        from pm_kit.__main__ import steps
+        from pleiadi_cli_builder import Screen
+        names = [s.name for s in steps(Screen("t"))]
+        self.assertIn("cartella per gli allegati", names)
 
     def set_config(self, **kv):
         cfg = os.environ["PM_KIT_CONFIG"]

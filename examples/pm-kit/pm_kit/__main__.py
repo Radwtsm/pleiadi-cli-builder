@@ -7,13 +7,14 @@ Configurazione (dato, JSON): $PM_KIT_CONFIG oppure ~/.config/pm-kit/config.json
      "vpn_minuti": 5,                       nel menu la VPN resta aperta fra le azioni, chiusa dopo questi minuti fermi
      "ruolo": "pm",                         segue i progetti: `progetti` e `stato` scaricano tutto senza --tutti
      "aggiorna_ogni_minuti": 10,            --aggiorna più ravvicinati usano la copia (meno carico su Redmine)
+     "cartella_download": "~/Downloads/pm-kit",   gli allegati di una task vanno in <cartella>/<numero>/
      "ca_file": "...", oppure "pin_sha256": "...", "pin_expires": "AAAA-MM-GG",   certificato interno
      "vpn": {"up": [...], "down": [...], "status": [...]}}                 la VPN, aperta solo per scaricare
 La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file."""
 import datetime, os, shlex, urllib.error
 
-from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, credentials, pin_step, read_json, run, run_steps,
-                                 secret, temporary, write_json)
+from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, copy_to_clipboard, credentials, pin_step,
+                                 read_json, run, run_steps, secret, temporary, write_json)
 from pm_kit import redmine
 
 app = App("pm-kit", title="PM kit", accent="#4a6cf7", menu_subtitle="i progetti in lavorazione")
@@ -199,6 +200,61 @@ def task_cmd(screen, args):
     return issue_cmd(screen, [str(found[i]["id"])]) if i is not None else 0
 
 
+def download_dir(cfg):
+    home = os.path.expanduser("~")
+    return os.path.expanduser((cfg or {}).get("cartella_download") or os.path.join(home, "Downloads", "pm-kit"))
+
+
+def save_attachments(screen, cfg, issue, token=None):
+    """Every attachment of `issue` into <download folder>/<number>/ (read-only on the server, same host only).
+    With --prova: the list of what would be written. Returns the message for the screen."""
+    folder = os.path.join(download_dir(cfg), str(issue["id"]))
+    files = [(a, os.path.join(folder, os.path.basename(a.get("filename") or f"allegato-{a.get('id')}")))
+             for a in issue.get("attachments") or []]
+    if not files:
+        return "nessun allegato"
+    if screen is not None and screen.dry:
+        for _, dest in files:
+            screen.info(f"farei: {dest}")
+        return f"farei: {len(files)} file in {folder}"
+
+    def fetch(t):
+        api = client(cfg, t)
+        return sum(api.download(a["content_url"], dest) for a, dest in files)
+    with vpn(cfg, screen), screen.wait(f"scarico {len(files)} allegati"):
+        total = with_key(screen, cfg, fetch)
+    return f"{len(files)} file ({total // 1024 + 1} KB) in {folder}"
+
+
+def issue_actions(issue):
+    """The one-key operations of the task view."""
+    def download(screen):
+        return save_attachments(screen, config(), issue)
+    return {"d": ("scarica gli allegati", download),
+            "c": ("copia il numero", lambda screen: "copiato #%s" % issue["id"] if copy_to_clipboard(f"#{issue['id']}")
+                  else "appunti non disponibili su questo computer")}
+
+
+@app.command("allegati", args="NUMERO", help="scarica gli allegati di una task in <cartella_download>/<numero>/",
+             menu=None, example=["101"])
+def allegati(screen, args):
+    if not args or not args[0].lstrip("#").isdigit():
+        failed(screen, f"Uso: {app.cmd('allegati')} NUMERO", {})
+        return 2
+    cfg, token = connect(screen)
+    if not cfg:
+        return failed(screen, token, {})
+    try:
+        with vpn(cfg, screen):
+            issue, _ = with_key(screen, cfg, lambda t: redmine.fetch_issue(client(cfg, t), args[0].lstrip("#")))
+            screen.info(save_attachments(screen, cfg, issue))
+    except HTTPError as e:
+        return failed(screen, f"Task {args[0]} non trovata" if e.status == 404 else why(e), {})
+    except (ERRORS + (ValueError,)) as e:
+        return failed(screen, why(e) if not isinstance(e, ValueError) else str(e), {})
+    return 0
+
+
 @app.command("issue", args="NUMERO", help="una task nel dettaglio: campi, descrizione, note, relazioni, allegati",
              menu=None, effects=False, json=True, example=["101"])
 def issue_cmd(screen, args):
@@ -220,7 +276,9 @@ def issue_cmd(screen, args):
         return failed(screen, f"Task {number} non trovata (o non visibile per te)" if e.status == 404 else why(e), {})
     except ERRORS as e:
         return failed(screen, why(e), {})
-    screen.detail(redmine.issue_detail(issue, me, datetime.date.today(), statuses))
+    d = redmine.issue_detail(issue, me, datetime.date.today(), statuses)
+    d.actions = issue_actions(issue)
+    screen.detail(d)
     return 0
 
 
@@ -279,6 +337,14 @@ def steps(screen):
                           **({"ruolo": "pm"} if pm else {})})
         return True
 
+    def ask_folder():
+        cfg = app.config(path) or {}
+        default = download_dir(cfg)
+        chosen = os.path.expanduser(screen.ask("Dove salvo gli allegati delle task? (Invio = la proposta)", default))
+        os.makedirs(chosen, exist_ok=True)
+        write_json(path, {**cfg, "cartella_download": chosen})
+        return True, chosen
+
     def vpn_known():
         cfg = config()
         if not cfg or "vpn" not in cfg:
@@ -317,6 +383,9 @@ def steps(screen):
                 fix=f"Scrivi {path} con url e user (vedi `{app.prog} help`)", plan=f"scrivo {path}"),
            Step("chiave API nel portachiavi", lambda: bool(stored_key(config())), apply=ask_key,
                 fix=f"`{app.cmd('setup')}` la chiede una volta", plan="chiedo la chiave e la salvo nel portachiavi"),
+           Step("cartella per gli allegati", lambda: bool(config() and config().get("cartella_download")),
+                apply=lambda: ask_folder(), plan="chiedo dove salvare gli allegati (proposta: ~/Downloads/pm-kit)",
+                fix=f'In {path}: "cartella_download": "percorso"'),
            Step("VPN", vpn_known, apply=ask_vpn, plan=f"chiedo se serve la VPN e la scrivo in {path}",
                 fix=f'In {path}: "vpn": null se non serve, oppure "vpn": {{"up": [...], "down": [...], "status": [...]}}'),
            Step("Redmine risponde", reaches)]

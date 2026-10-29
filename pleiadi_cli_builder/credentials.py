@@ -188,16 +188,29 @@ def _clipboard():
     from shutil import which
     run = lambda *c, **k: subprocess.run(list(c), capture_output=True, text=True, encoding="utf-8", **k)
     if MAC:
-        return {"read": lambda: run("pbpaste").stdout, "clear": lambda: run("pbcopy", input="")}
+        return {"read": lambda: run("pbpaste").stdout, "clear": lambda: run("pbcopy", input=""),
+                "write": lambda t: run("pbcopy", input=t)}
     if WIN:
         return {"read": lambda: run("powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw").stdout,
-                "clear": lambda: run("cmd", "/c", "type nul | clip")}
+                "clear": lambda: run("cmd", "/c", "type nul | clip"),
+                "write": lambda t: run("powershell", "-NoProfile", "-Command", "$input | Set-Clipboard", input=t)}
     if which("wl-paste"):
-        return {"read": lambda: run("wl-paste", "-n").stdout, "clear": lambda: run("wl-copy", "--clear")}
+        return {"read": lambda: run("wl-paste", "-n").stdout, "clear": lambda: run("wl-copy", "--clear"),
+                "write": lambda t: run("wl-copy", input=t)}
     if which("xclip"):
         return {"read": lambda: run("xclip", "-o", "-selection", "clipboard").stdout,
-                "clear": lambda: run("xclip", "-i", "-selection", "clipboard", "/dev/null")}
+                "clear": lambda: run("xclip", "-i", "-selection", "clipboard", "/dev/null"),
+                "write": lambda t: run("xclip", "-i", "-selection", "clipboard", input=t)}
     return None
+
+
+def copy_to_clipboard(text):
+    """Puts `text` (a task number, a path) in the clipboard: True if there is one. Never for secrets."""
+    clip = _clipboard()
+    if not clip or "write" not in clip:
+        return False
+    clip["write"](text)
+    return True
 
 
 def check_secret(value, validate=None):

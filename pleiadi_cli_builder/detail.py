@@ -14,8 +14,10 @@ TONES = {"alarm": "31;1", "warn": "33", "ok": "32", "dim": "2"}
 class Detail:
     """fields = [(label, value, tone)]; sections = [(title, [(text, tone)], folded=False)]; legend = {tone: meaning}.
     tone: "alarm", "warn", "ok", "dim" or None."""
-    def __init__(self, title, fields=(), sections=(), legend=None):
-        self.title, self.fields, self.legend = title, list(fields), dict(legend or {})
+    def __init__(self, title, fields=(), sections=(), legend=None, actions=None):
+        """actions = {key: (label, fn(screen) → message)}: one-key operations on this record (shown in the
+        bottom line), e.g. {"d": ("scarica allegati", …), "c": ("copia il numero", …)}."""
+        self.title, self.fields, self.legend, self.actions = title, list(fields), dict(legend or {}), dict(actions or {})
         self.sections = [(s[0], list(s[1]), bool(s[2]) if len(s) > 2 else False) for s in sections]
 
     def as_dict(self):
@@ -29,6 +31,7 @@ class Pager:
         self.color = color or (lambda code, text: text)
         self.folded = {t for t, _, f in detail.sections if f}
         self.top, self.hits, self.hit, self.query = 0, [], 0, ""
+        self.cur = 0  # the section Space opens/closes: marked ▶ (owner 29/10: «deve essere chiaro»)
 
     def resize(self, width, height):
         self.width, self.height = width, height
@@ -60,16 +63,18 @@ class Pager:
 
     def lines(self):
         """The body, wrapped to the width; self.owner[i] = the section of line i."""
-        out, self.owner = [], []
-        for title, items, _ in self.d.sections:
+        out, self.owner, self.heads = [], [], []
+        for n, (title, items, _) in enumerate(self.d.sections):
             if out:
                 out.append("")
                 self.owner.append(None)
+            mark = self.color("7;1", "▶") + " " if n == self.cur else "  "
+            self.heads.append(len(out))
             if title in self.folded:
-                out.append(self.color("1", f"▸ {title}") + self.color("2", f" ({len(items)} righe)"))
+                out.append(mark + self.color("1", f"▸ {title}") + self.color("2", f" ({len(items)} righe)"))
                 self.owner.append(title)
                 continue
-            out.append(self.color("1", f"▾ {title}"))
+            out.append(mark + self.color("1", f"▾ {title}"))
             self.owner.append(title)
             for text, tone in items:
                 for raw in str(text).split("\n"):
@@ -95,13 +100,32 @@ class Pager:
 
     # ── keys ──
     def toggle(self, title=None):
-        """Fold/unfold `title`, or the section of the first line on screen."""
-        if title is None:
-            self.lines()
-            title = next((self.owner[i] for i in range(self.top, len(self.owner)) if self.owner[i]), None)
+        """Fold/unfold `title`, or the marked section."""
+        if title is None and self.d.sections:
+            title = self.d.sections[self.cur][0]
         if title:
             self.folded ^= {title}
             self.top = min(self.top, self.max_top())
+
+    def _jump(self, step):
+        """Tab / Shift+Tab: the mark to the next/previous section, and the view to its title."""
+        if self.d.sections:
+            self.cur = (self.cur + step) % len(self.d.sections)
+            self.lines()
+            self.top = min(self.heads[self.cur], self.max_top())
+
+    def _follow(self):
+        """After scrolling: if the marked title left the screen, mark the first title on screen (or below it)."""
+        self.lines()
+        if not self.heads or self.top <= self.heads[self.cur] < self.top + self.rows():
+            return
+        after = [n for n, h in enumerate(self.heads) if h >= self.top]
+        self.cur = after[0] if after else len(self.heads) - 1
+
+    def hint(self):
+        keys = "↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · n successiva"
+        acts = " · ".join(f"{k} {label}" for k, (label, _) in self.d.actions.items())
+        return keys + (f" · {acts}" if acts else "") + " · q chiudi"
 
     def search(self, query):
         """Jumps to the first line with `query` (any case), opening the folded sections where it is. Returns the
@@ -123,12 +147,19 @@ class Pager:
         """One key → "quit", "search" (the caller asks the text, then search()), or None."""
         page = max(1, self.rows() - 1)
         moves = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "k": -1, "j": 1}
+        if k in self.d.actions:
+            return ("action", k)
         if k in moves:
             self.top = max(0, min(self.max_top(), self.top + moves[k]))
+            self._follow()
         elif k in ("home", "g"):
             self.top = 0
+            self._follow()
         elif k in ("end", "G"):
             self.top = self.max_top()
+            self._follow()
+        elif k in ("tab", "backtab"):
+            self._jump(1 if k == "tab" else -1)
         elif k == " ":
             self.toggle()
         elif k in ("n", "N") and self.hits:
