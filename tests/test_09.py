@@ -91,5 +91,34 @@ class Download(unittest.TestCase):
             srv.server_close()
 
 
+class PickHasHeader(unittest.TestCase):
+    """Owner 29/10: «le tabelle non hanno intestazione» — the rows to choose came without the column titles."""
+    def test_header_above_the_choices_and_rows_once(self):
+        from unittest import mock
+        s = term.Screen("t")
+        s.full = True
+        printed, asked = [], {}
+        s.out = printed.append
+
+        def choose(question, options, header=None):
+            asked.update(q=question, options=options, header=header)
+            return 1
+        with mock.patch.object(term.Screen, "interactive", new=True):
+            s.choose = choose
+            i = s.table([{"id": 101, "titolo": "Home page"}, {"id": 103, "titolo": "Menu"}], pick=True)
+        self.assertEqual(i, 1)
+        self.assertIn("titolo", term.ANSI.sub("", asked["header"]))
+        self.assertTrue(asked["options"][0].startswith("101"))
+        self.assertFalse(any("Home page" in term.ANSI.sub("", l) for l in printed))  # not printed twice
+
+    def test_menu_rows_align_under_the_header(self):
+        s = term.Screen("t")
+        rows = [s._menu_row(i, f"r{i}", sel=0, n=12, rec="") for i in (0, 9)]
+        head = s._menu_header("COL", 12)
+        col = term.ANSI.sub("", head).index("COL")
+        self.assertEqual(term.ANSI.sub("", rows[1]).index("r9"), col)
+        self.assertEqual(term.ANSI.sub("", rows[0]).index("r0"), col)
+
+
 if __name__ == "__main__":
     unittest.main()

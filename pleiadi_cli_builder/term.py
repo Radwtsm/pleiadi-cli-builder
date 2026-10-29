@@ -388,18 +388,20 @@ class Screen:
         head = [str(titles.get(k, k)) for k in columns]
         body = [[cell(r.get(k)) for k in columns] for r in rows]
         widths = [max(len(h), *(len(b[i]) for b in body)) for i, h in enumerate(head)]
-        room = self.text_width() - 4 - 2 * (len(columns) - 1)
+        room = self.text_width() - 4 - 2 * (len(columns) - 1) - (len(str(len(rows) + 1)) + 2 if pick else 0)
         while sum(widths) > room and max(widths) > 6:
             widths[widths.index(max(widths))] -= 1
         fit = lambda v, w: v if len(v) <= w else v[:w - 1] + "…"
         line = lambda vals: "  ".join(fit(v, w).ljust(w) for v, w in zip(vals, widths)).rstrip()
+        count = self.dim(self.t["row"] if len(rows) == 1 else self.t["rows"].format(n=len(rows)))
+        if pick and self.full and self.interactive:  # the rows once, as choices, under their column titles
+            self.out("    " + count)
+            i = self.choose(self.t["open_q"], [line(b) for b in body] + [self.t["back"]], header=line(head))
+            return i if i < len(rows) else None
         self.out("    " + self.bold(line(head)))
         for b in body:
             self.out("    " + line(b))
-        self.out("    " + self.dim(self.t["row"] if len(rows) == 1 else self.t["rows"].format(n=len(rows))))
-        if pick and self.full and self.interactive:
-            i = self.choose(self.t["open_q"], [line(b) for b in body] + [self.t["back"]])
-            return i if i < len(rows) else None
+        self.out("    " + count)
         return None
 
     def detail(self, d):
@@ -553,18 +555,20 @@ class Screen:
             self.no_input, r = True, ""
         return r or default
 
-    def choose(self, question, options):
+    def choose(self, question, options, header=None):
         """options = [text]; the first is the recommended one. Returns the index. Arrows + Enter (or the number);
-        without a real terminal: type the number."""
+        without a real terminal: type the number. header = column titles shown above the options (a table)."""
         self.out("")
         self.out("  " + self.acc("?") + " " + self.bold(question))
+        if header:
+            self.out(self._menu_header(header, len(options)))
         if self.colors and sys.stdin.isatty():
             try:
-                return self._menu(options)
+                return self._menu(options, recommend=not header)
             except (OSError, ImportError):
                 pass  # no single keys (odd console): fall back to the number
-        for i, o in enumerate(options, 1):
-            self.out(f"    {i}. {o}" + (self.dim("  " + self.t["recommended"]) if i == 1 else ""))
+        for i, o in enumerate(options):
+            self.out(self._menu_row(i, o, None, len(options), "" if header else "  " + self.t["recommended"]))
         while True:
             r = self.ask(self.t["type_number"], "1")
             if r.isdigit() and 1 <= int(r) <= len(options):
@@ -573,14 +577,21 @@ class Screen:
     def confirm(self, question, yes=None, no=None):
         return self.choose(question, [yes or self.t["yes"], no or self.t["no"]]) == 0
 
-    def _menu(self, options):
-        rec = "  " + self.t["recommended"]
+    def _menu_row(self, i, o, sel, n, rec):
+        """One option, its number right-aligned (1..n) so that texts start in the same column as the header."""
+        nw = len(str(n))
+        w = self.text_width() - 6 - nw
+        o = o if len(o) <= w else o[:w - 1] + "…"  # one line per option, even on a narrow screen
+        note = self.dim(rec) if rec and i == 0 and len(o) + len(rec) + 1 <= w else ""
+        num = f"{i + 1:>{nw}}."
+        return (self.acc(f"  {self.theme.prompt} {num} {o}") if i == sel else f"    {num} {o}") + note
 
-        def row(i, o):
-            w = self.text_width() - 8
-            o = o if len(o) <= w else o[:w - 1] + "…"  # one line per option, even on a narrow screen
-            note = self.dim(rec) if i == 0 and len(o) + len(rec) + 1 <= w else ""
-            return (self.acc(f"  {self.theme.prompt} {i + 1}. {o}") if i == sel else f"    {i + 1}. {o}") + note
+    def _menu_header(self, header, n):
+        return " " * (4 + len(str(n)) + 2) + self.bold(header)
+
+    def _menu(self, options, recommend=True):
+        rec = "  " + self.t["recommended"] if recommend else ""
+        row = lambda i, o: self._menu_row(i, o, sel, n, rec)
         sel, n = 0, len(options)
         self.mode = "choose"
 
