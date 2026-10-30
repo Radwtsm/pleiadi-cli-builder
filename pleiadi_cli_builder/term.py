@@ -9,7 +9,7 @@ WIN, MAC = os.name == "nt", sys.platform == "darwin"
 
 TEXTS = {
     "it": {"hint": "↑↓ scegli · Invio conferma · Ctrl+C esci", "hint_resume": "riprende da dove eri",
-           "hint_idle": "Ctrl+C esci", "hint_type": "scrivi · Invio conferma · Ctrl+C esci",
+           "hint_idle": "Ctrl+C esci", "hint_back": "↑↓ scegli · Invio conferma · Esc indietro · Ctrl+C esci", "hint_type": "scrivi · Invio conferma · Ctrl+C esci",
            "hint_read": "↑↓ PgSu PgGiù scorri · Inizio/Fine salta · / cerca · n successiva · Spazio apre/chiude · q chiudi",
            "recommended": "(consigliata)", "type_number": "Scrivi il numero e premi Invio:", "yes": "Sì", "no": "No",
            "done_q": "Fatto?", "retry": "Riprova adesso", "skip": "Salta per ora", "not_yet": "ancora no",
@@ -26,9 +26,10 @@ TEXTS = {
            "bad_yesno": "rispondi sì o no", "bad_choice": "scegli fra: {options}",
            "bad_number": "serve un numero (0 o più)",
            "unknown_setting": "Impostazione «{key}» sconosciuta. Ci sono: {keys}",
-           "settings_cli": "cambiarle: nel menu, oppure `impostazioni NOME VALORE` («-» = predefinito) · file: {path}"},
+           "settings_cli": "cambiarle: nel menu, oppure `impostazioni NOME VALORE` («-» = predefinito) · file: {path}",
+           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
-           "hint_idle": "Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
+           "hint_idle": "Ctrl+C quit", "hint_back": "↑↓ choose · Enter confirm · Esc back · Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
            "recommended": "(recommended)", "type_number": "Type the number and press Enter:", "yes": "Yes", "no": "No",
            "done_q": "Done?", "retry": "Try again now", "skip": "Skip for now", "not_yet": "not yet",
@@ -45,7 +46,8 @@ TEXTS = {
            "bad_yesno": "answer yes or no", "bad_choice": "choose among: {options}",
            "bad_number": "a number is needed (0 or more)",
            "unknown_setting": "Unknown setting «{key}». There are: {keys}",
-           "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}"},
+           "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}",
+           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above"},
 }
 
 # the default logo of the box on top; only blocks every console font has (the classic Windows console too)
@@ -91,6 +93,19 @@ def pairs(hint):
         words = part.split(" ")
         out.append((" ".join(words[:-1]), words[-1]) if len(words) > 1 else ("", part))
     return out
+
+
+def duration(seconds):
+    """12.3 → "12 s", 125 → "2:05", 0.4 → "0.4 s"."""
+    s = round(seconds)
+    return f"{seconds:.1f} s" if seconds < 1 else f"{s} s" if s < 60 else f"{s // 60}:{s % 60:02d}"
+
+
+def change(now, before):
+    """"+12%" / "-30%" against the last run; "" when unknown or under a second either way."""
+    if not before or abs(now - before) < 1:
+        return ""
+    return f"{(now - before) / before * 100:+.0f}%"
 
 
 def visible_len(s):
@@ -181,6 +196,23 @@ def key():
     return "enter" if k in ("\r", "\n") else k
 
 
+# Colors by meaning for the output of programs: the first rule that matches gives the line its Theme role. The rules
+# look at the line without its file names, so "errorHandler.cpp" or "error.log" don't make a line an error.
+RULES = [(re.compile(r"(?i)\b(error|errore|errors|failed|failure|fatal|exception|traceback|denied|panic|conflict)\b"), "error"),
+         (re.compile(r"(?i)\b(warn|warning|warnings|attenzione|avviso|deprecated|skipped)\b"), "warn"),
+         (re.compile(r"(?i)\b(ok|done|success|successful|passed|completed|completato|fatto|riuscito)\b"), "ok")]
+FILE_NAME = re.compile(r"[\w.~/\\-]*\w\.[A-Za-z][A-Za-z0-9]{0,5}\b")
+
+
+def role_of(line, rules=None):
+    """The Theme role of a line of output ("error", "warn", "ok", …) or None."""
+    text = FILE_NAME.sub(" ", ANSI.sub("", line))
+    for rx, role in (RULES if rules is None else rules):
+        if rx.search(text):
+            return role
+    return None
+
+
 SCREENS = []  # the open full screen (one): run(interactive=True) suspends it for programs that talk by themselves
 LIVE = []  # the open status line (Screen.wait): long functions report progress into it without printing
 
@@ -229,6 +261,9 @@ class Screen:
                 self.colors = False
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
+        self.timings = {}  # phase → seconds in this command (run_steps, steps.phase)
+        self.rules, self.live_n = RULES, 0
+        self.outcome = False  # the command has said how it ended (done(), summary()): App.call adds one otherwise  # colors by meaning of output(); live lines now at the end of the body
         self.focus, self.over, self.stay = None, False, False  # see visible(), out() and App.menu
         self.logo, self.about, self.rows = LOGO, None, []  # the box on top: see header() and banner()
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
@@ -316,7 +351,34 @@ class Screen:
                 self.body, self.over = [], False
             self.body += line.split("\n")
             del self.body[:-500]
+            self.live_n = 0
         self.draw()
+
+    def paint(self, line):
+        """A line of a program's output in the color of its meaning (self.rules); as it is without one."""
+        role = role_of(line, self.rules)
+        return self.c(getattr(self.theme, role), line) if role else line
+
+    def output(self, text):
+        """What a program printed, line by line, each colored by its meaning (files and logs stay plain)."""
+        for r in str(text).split("\n"):
+            self.out("    " + self.paint(r) if r.strip() else "")
+
+    def live(self, line, keep=10):
+        """A line of a program while it runs: in full screen it scrolls under the current step, colored by its
+        meaning, and only the last `keep` stay; returns False (nothing shown) elsewhere, where the output comes
+        back to the caller at the end."""
+        if not self.full or keep <= 0:
+            return False
+        self.open()
+        with self.lock:
+            while self.live_n >= keep:
+                del self.body[-self.live_n]
+                self.live_n -= 1
+            self.body.append(self.dim("  " + self.theme.attach + " ") + self.paint(line))
+            self.live_n += 1
+        self.draw()
+        return True
 
     def draw(self):
         if not self.opened or self.suspended:
@@ -382,7 +444,7 @@ class Screen:
         """Only the keys that work now (owner: «arrows» shown with nothing to choose was a bug), plus the open
         menu-session accesses («VPN aperta da 4 min»)."""
         from .access import status_line
-        h = self.t.get({"choose": "hint", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
+        h = self.t.get({"choose": "hint", "back": "hint_back", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
         st = status_line()
         return h + (f" · {st}" if st else "")
 
@@ -402,7 +464,7 @@ class Screen:
     def hint_line(self):
         """The bottom line: the keys of this moment, then the open accesses (muted)."""
         from .access import status_line
-        h = self.t.get({"choose": "hint", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
+        h = self.t.get({"choose": "hint", "back": "hint_back", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
         st = status_line()
         return self.keys(pairs(h)) + (self.dim(f" · {st}") if st else "")
 
@@ -463,7 +525,8 @@ class Screen:
     def step(self, n, total, text, why=""):
         """⏺ Step  n/total · why — the results attach below with ⎿ (like Claude Code's actions)."""
         self.out("")
-        self.out(self.acc(self.theme.step) + " " + self.bold(text) + self.dim(f"  {n}/{total}" + (f" · {why}" if why else "")))
+        count = f"  {n}/{total}" if total else ""  # total 0: steps not known in advance (steps.phase)
+        self.out(self.acc(self.theme.step) + " " + self.bold(text) + self.dim(count + (f" · {why}" if why else "")))
         self.attached = True
 
     def _indent(self):
@@ -696,7 +759,9 @@ class Screen:
         elif r.skipped:
             self.out(self._indent() + self.dim(f"{th.yes} {r.name}" + (f" · {r.note}" if r.note else "")))
         elif r.ok:
-            self.out(self._indent() + self.c(th.ok, th.yes) + f" {r.name}" + (self.dim(f" · {r.note}") if r.note else ""))
+            took = f" · {duration(r.seconds)}" if getattr(r, "seconds", None) and r.seconds >= 1 else ""
+            self.out(self._indent() + self.c(th.ok, th.yes) + f" {r.name}" + (self.dim(f" · {r.note}") if r.note else "")
+                     + self.dim(took))
         else:
             self.out(self._indent() + self.c(th.error, th.no) + f" {r.name}")
             if r.fix:
@@ -715,6 +780,18 @@ class Screen:
                 self.out("    " + self.c(th.error, th.no) + f" {r.name} · {self.t['not_yet']}")
         return r.ok
 
+    def timing_table(self, before=None):
+        """Every phase of this command with its time and, when known, the last run's and the change."""
+        before = before or {}
+        rows = [{"phase": k, "now": duration(v), "before": duration(before[k]) if k in before else "—",
+                 "change": change(v, before.get(k))} for k, v in self.timings.items()]
+        if len(rows) > 1:
+            now, old = sum(self.timings.values()), [before.get(k) for k in self.timings]
+            rows.append({"phase": self.t["total"], "now": duration(now),
+                         "before": duration(sum(old)) if None not in old else "—",
+                         "change": change(now, sum(old) if None not in old else None)})
+        self.table(rows, ["phase", "now", "before", "change"], {k: self.t[k] for k in ("phase", "now", "before", "change")})
+
     def summary(self, minutes=None):
         """The closing box: n/total ok and what is still ✗; it stays on screen after exit."""
         good = [r for r in self.results if r.ok or r.skipped]
@@ -731,7 +808,15 @@ class Screen:
             lines.append(self.dim("  " + self.t["rerun"].format(name=self.name)))
         self.box(lines)
         self.last = self.frame(lines)
+        self.outcome = True
         return everything
+
+    def done(self, text, ok=True):
+        """How the command ended, the last line: ✓ in green or ✗ in red, and what."""
+        th = self.theme
+        self.out("")
+        self.out(self.c(th.ok, th.yes) + " " + text if ok else self.c(th.error, th.no) + " " + text)
+        self.outcome = True
 
     # ── questions ──
     def ask(self, question, default=""):
@@ -744,11 +829,12 @@ class Screen:
             self.no_input, r = True, ""
         return r or default
 
-    def choose(self, question, options, header=None, keys=None, start=0):
+    def choose(self, question, options, header=None, keys=None, start=0, esc=None):
         """options = [text]; the first is the recommended one. Returns the index. Arrows + Enter (or the number);
         without a real terminal: type the number. header = column titles shown above the options (a table).
         keys = one letter per option (None: none): shown as a chip on its row, that letter picks it at once.
-        start = the option the cursor starts on (coming back from where you went in)."""
+        start = the option the cursor starts on (coming back from where you went in).
+        esc = the option Esc picks (the «Back» or «Quit» one): the same key goes back everywhere."""
         keys = list(keys or [])
         self.out("")
         self.out("  " + self.acc("?") + " " + self.bold(question))
@@ -757,7 +843,7 @@ class Screen:
             self.out(self._menu_header(header, len(options)))
         if self.colors and sys.stdin.isatty():
             try:
-                return self._menu(options, recommend=not header, keys=keys, start=start, asked=asked)
+                return self._menu(options, recommend=not header, keys=keys, start=start, asked=asked, esc=esc)
             except (OSError, ImportError):
                 pass  # no single keys (odd console): fall back to the number
         for i, o in enumerate(options):
@@ -796,12 +882,12 @@ class Screen:
         pad = " " * (4 + len(str(n)) + 2)
         return pad + self.bold(header) + "\n" + pad + self.dim("─" * visible_len(header))
 
-    def _menu(self, options, recommend=True, keys=(), start=0, asked=0):
+    def _menu(self, options, recommend=True, keys=(), start=0, asked=0, esc=None):
         rec = "  " + self.t["recommended"] if recommend else ""
         letter = {k: i for i, k in enumerate(keys) if k}
         row = lambda i, o: self._menu_row(i, o, sel, n, rec, keys[i] if i < len(keys) else None)
         sel, n = min(max(0, start), len(options) - 1), len(options)
-        self.mode = "choose"
+        self.mode = "choose" if esc is None else "back"
 
         def move(k):
             return ((sel - 1) % n if k == "up" else (sel + 1) % n if k == "down" else
@@ -818,6 +904,9 @@ class Screen:
                     break
                 if k in letter:  # a shortcut: picked at once
                     sel = letter[k]
+                    break
+                if k == "esc" and esc is not None:
+                    sel = esc
                     break
                 sel = move(k)
                 with self.lock:
@@ -841,6 +930,8 @@ class Screen:
                     return sel
                 if k in letter:
                     return letter[k]
+                if k == "esc" and esc is not None:
+                    return esc
                 new = move(k)
                 if new == sel:
                     continue

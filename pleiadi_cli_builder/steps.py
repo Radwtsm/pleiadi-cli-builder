@@ -1,14 +1,16 @@
 """Steps that can be rerun: each one checks first and skips what is already done, so a setup interrupted
 halfway resumes where it stopped. The same steps in check-only mode are a `doctor`."""
 import time
+from contextlib import contextmanager
 
 
 class Result:
     """fix = what to do when it fails (shown only with ✗); note = detail shown with ✓.
     retry = function that redoes the step and returns True if it now works: offered on the spot."""
-    def __init__(self, name, ok, fix="", skipped=False, note="", retry=None, planned=False):
+    def __init__(self, name, ok, fix="", skipped=False, note="", retry=None, planned=False, seconds=None):
         self.name, self.ok, self.fix, self.skipped, self.note, self.retry = name, ok, fix, skipped, note, retry
         self.planned = planned  # dry run: it would be applied
+        self.seconds = seconds  # how long apply took (None: not applied)
 
     def __repr__(self):
         return f"Result({self.name!r}, ok={self.ok}, skipped={self.skipped})"
@@ -55,6 +57,7 @@ def run_steps(screen, steps, check_only=False):
             screen.result(Result(s.name, False, fix=s.fix or note))
             continue
         APPLIED.append(s.name)
+        t0 = time.time()
         try:
             if s.wait:
                 with screen.wait(s.wait):
@@ -63,7 +66,28 @@ def run_steps(screen, steps, check_only=False):
                 ok, note = _norm(s.apply())
         except Exception as e:
             ok, note = False, str(e)
+        seconds = time.time() - t0
+        screen.timings[s.name] = screen.timings.get(s.name, 0) + seconds
         retry = (lambda s=s: _norm(s.apply())[0]) if not ok else None
         screen.result(Result(s.name, ok, fix="\n".join(x for x in (s.fix, note if not ok else "") if x),
-                             note=note if ok else "", retry=retry))
+                             note=note if ok else "", retry=retry, seconds=seconds))
     return screen.summary(round((time.time() - start) / 60))
+
+
+@contextmanager
+def phase(screen, name, why="", show=True):
+    """A phase of a command that doesn't run as Steps (with phase(screen, "build"): ...): shown like a step, its
+    output (run_live) scrolls under it, it closes with ✓ and its time or ✗ (the error goes on up). With
+    App(timings=True) the closing table compares every phase with the last run. show=False: only timed."""
+    t0 = time.time()
+    if show:
+        screen.step(len(screen.timings) + 1, 0, name, why)
+    ok = False
+    try:
+        yield
+        ok = True
+    finally:
+        seconds = time.time() - t0
+        screen.timings[name] = screen.timings.get(name, 0) + seconds
+        if show:
+            screen.result(Result(name, ok, seconds=seconds))

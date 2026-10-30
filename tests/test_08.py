@@ -37,7 +37,8 @@ class Sections(unittest.TestCase):
         self.assertIn("mine ['x']", out)
         self.assertIn("`tool task configure`", out)  # the host's name and the renamed command
         code, out, _ = quiet(lambda: self.host.main(["task", "configure", "--dry-run"]))
-        self.assertEqual(out.strip(), "dry")
+        self.assertEqual(out.strip().splitlines()[0], "dry")
+        self.assertEqual(out.strip().splitlines()[-1], "✓ setup: done")  # every command ends with its outcome
         self.assertEqual(quiet(lambda: self.host.main(["task", "setup"]))[0], 2)  # renamed away
         self.assertEqual(self.t.cmd("mine"), "tool task mine")
 

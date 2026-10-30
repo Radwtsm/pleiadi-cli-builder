@@ -58,7 +58,7 @@ class Apps(unittest.TestCase):
         self.app.command("hi", help="says hi")(lambda s, a: s.out("hi " + " ".join(a)))
 
     def test_dispatch_help_unknown(self):
-        self.assertEqual(plain(lambda: self.app.main(["hi", "there"])), (0, "hi there\n"))
+        self.assertEqual(plain(lambda: self.app.main(["hi", "there"])), (0, "hi there\n\n✓ hi: done\n"))
         self.assertIn("x-test hi", plain(lambda: self.app.main(["help"]))[1])
         self.assertEqual(plain(lambda: self.app.main(["nope"]))[0], 2)
 

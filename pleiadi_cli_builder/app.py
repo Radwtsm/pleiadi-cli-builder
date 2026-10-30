@@ -70,17 +70,21 @@ class App:
         app.main()
     """
     def __init__(self, name, title="", accent=None, theme=None, lang="it", first_run=None, menu_subtitle="",
-                 write_commands=(), session_idle_minutes=5, banner=None, banner_info=None):
+                 write_commands=(), session_idle_minutes=5, banner=None, banner_info=None, timings=False):
         """write_commands = the programs that change something, as the start of their command line
         (e.g. [["git", "push"], ["rm"]]): run() refuses them inside read-only commands and dry runs.
         session_idle_minutes = in the interactive menu, an access (VPN) stays open between actions and closes
         after this many minutes without actions (always on exit).
         banner = the logo in the box on top, a few rows of blocks (colored with the accent unless they already have
-        their colors; None: the library's; (): none); banner_info() → more lines beside it: version, folder, context."""
+        their colors; None: the library's; (): none); banner_info() → more lines beside it: version, folder, context.
+        timings = after a command with timed phases (run_steps, steps.phase) a table of every phase now, in the last
+        run of the same command and the change; the times are kept in the state."""
+        self.timings = timings
         self.banner, self.banner_info = banner, banner_info
         self.session_idle_minutes, self._memory = session_idle_minutes, {}
         self.sections, self.prog, self.renamed = {}, name, {}  # prog/renamed: how the host calls this App
         self.name, self.title, self.lang = name, title or name, lang
+        self.crumbs = [self.title]  # where a screen is: «Tool › Section › Action» (include() extends it)
         self.write_commands = [list(w) for w in write_commands]
         self.theme = theme or Theme(**({"accent": Theme.rgb(accent) if accent.startswith("#") else accent} if accent else {}))
         self.commands, self.first_run, self.menu_subtitle = {}, first_run, menu_subtitle
@@ -180,6 +184,7 @@ class App:
         rename = {its command: name here} (e.g. setup → configure, so they don't clash with this tool's). Its
         snapshots and state stay its own (other.cache_dir, other.state_path): set them if the host wants them."""
         other.prog, other.renamed, other.section_title = f"{self.prog} {name}", dict(rename or {}), title or name
+        other.crumbs = self.crumbs + [other.section_title]
         self.sections[name] = other
         return other
 
@@ -268,9 +273,12 @@ class App:
         screen.header(self.menu_subtitle)
         with access.session(self.session_idle_minutes):  # a VPN opened for one action serves the next ones
             while True:  # back to the menu after each item, until «Quit»: on the item you came from
-                i = screen.choose(t[2], [c.menu for c in items] + [t[3]], keys=letters, start=i)
+                if len(self.crumbs) > 1:
+                    screen.out("  " + screen.dim(f" {screen.theme.crumb} ".join(self.crumbs)))
+                i = screen.choose(t[2], [c.menu for c in items] + [t[3]], keys=letters, start=i, esc=len(items))
                 if i == len(items):
                     return code
+                screen.fresh(self.crumbs + [items[i].menu.rstrip(" ›")])
                 code = self.call(items[i], screen, [])
                 screen.results = []  # each item's summary counts only its own steps
                 if not sys.stdin.isatty():
@@ -328,9 +336,32 @@ class App:
         if screen.json:
             screen.full = False  # data for another program: plain lines on stderr, JSON on stdout
         proc.POLICY.update(write_commands=self.write_commands, read_only=screen.read_only, dry=screen.dry)
+        screen.timings, screen.outcome = {}, False
+        section = c.fn.__defaults__ and isinstance(c.fn.__defaults__[-1], App)  # a section's menu, not an action
         try:
             drop = (DRY_FLAGS if c.dry else ()) + REFRESH_FLAGS + (JSON_FLAG,)
-            return c.fn(screen, [a for a in args if a not in drop]) or 0
+            try:
+                code = c.fn(screen, [a for a in args if a not in drop]) or 0
+            except (KeyboardInterrupt, proc.PolicyError):
+                raise
+            except Exception as e:  # a clear ✗ line, never a traceback (PCB_DEBUG=1: the traceback)
+                if os.environ.get("PCB_DEBUG"):
+                    raise
+                if not screen.json:
+                    screen.done(f"{c.menu or c.name}: {type(e).__name__}: {e}", ok=False)
+                    screen.info(screen.dim(screen.t["debug"].format(env="PCB_DEBUG")))
+                return 1
+            # screen.stay: a screen the person closed with a key has already shown where it got to
+            if not (screen.outcome or screen.json or section or screen.stay):
+                label = (c.menu or c.name).rstrip(" ›")
+                screen.done(f"{label}: {screen.t['done']}" if code == 0 else
+                            f"{label}: {screen.t['failed'].format(code=code)}", ok=code == 0)
+            if self.timings and screen.timings and not screen.json and not screen.dry:
+                every = self.state().get("timings", {})
+                screen.timing_table(every.get(c.name))
+                every[c.name] = {k: round(v, 1) for k, v in screen.timings.items()}
+                self.save_state(timings=every)
+            return code
         finally:
             screen.read_only = screen.dry = screen.json = screen.refresh = False
             proc.POLICY.update(read_only=False, dry=False)

@@ -1,7 +1,7 @@
 """Running other programs: captured, interactive (the person answers), or live into the spinner line."""
 import os, re, subprocess, sys, time
 
-from .term import SCREENS, SECRETS, WIN, mask, progress
+from .term import SCREENS, SECRETS, WIN, mask, progress, role_of, RULES
 
 # Windows: from a detached background run every child would flash a black console window
 NO_WINDOW: dict = {"creationflags": 0x08000000} if WIN else {}
@@ -57,12 +57,14 @@ def run(*cmd, cwd=None, timeout=300, interactive=False, env=None):
         return 1, str(e)
 
 
-ERROR_LINE = re.compile(r"(?i)\b(error|errore|failed|failure|fatal|exception|traceback|denied|panic)\b")
+ERROR_LINE = RULES[0][0]  # kept for who imported it; the meaning of a line: term.role_of
 
 
-def run_live(*cmd, cwd=None, timeout=900, env=None, log=None):
+def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10):
     """Like run, but every line of the program (also the \\r ones of progress bars) goes into the open spinner
     line, with the percentage when the line has one. Returns (exit code, output).
+    show = in full screen the last lines also scroll live under the current step, colored by their meaning, like
+    Claude Code (0: only the spinner line); at the end what didn't fit is counted.
     log = a file path: the whole output goes there (secrets masked); what comes back is only the error lines, the
     last line and where the log is — long builds don't flood the screen (or Claude's context)."""
     check(cmd)
@@ -74,6 +76,7 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None):
         os.makedirs(os.path.dirname(os.path.abspath(log)), exist_ok=True)
         logf = open(log, "w", encoding="utf-8", newline="\n")
     out, rest, end = [], b"", time.time() + timeout
+    screen, shown = (SCREENS[-1] if SCREENS else None), 0
     try:
         while True:
             chunk = p.stdout.read1(4096)
@@ -86,7 +89,9 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None):
                 if t:
                     out.append(t)
                     if log:
-                        logf.write(t + "\n")
+                        logf.write(t + "\n")  # the log stays without colors
+                    if screen and screen.live(t, show):
+                        shown += 1
                     pc = re.search(r"(\d{1,3})(?:[.,]\d+)?\s?%", t)
                     progress(int(pc.group(1)) / 100 if pc and int(pc.group(1)) <= 100 else None, t)
             if time.time() > end:
@@ -97,8 +102,11 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None):
         if log:
             logf.close()
     code = p.wait()
+    p.stdout.close()
+    if shown > show:
+        screen.out(screen.dim("    " + screen.t["more_lines"].format(n=shown - show) + (f" · log: {log}" if log else "")))
     if log:
-        errors = [t for t in out if ERROR_LINE.search(t)][-20:]
+        errors = [t for t in out if role_of(t) == "error"][-20:]
         tail = [out[-1]] if out and out[-1] not in errors else []
         return code, "\n".join(errors + tail + [f"log: {log}"])
     return code, "\n".join(out)

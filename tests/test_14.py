@@ -45,7 +45,7 @@ class Logic(unittest.TestCase):
             app.command(name, menu=label)(lambda s, a: 0)
         starts, answers = [], iter([2, 3])
         s = app.screen()
-        s.choose = lambda q, o, keys=None, start=0, header=None: starts.append(start) or next(answers)
+        s.choose = lambda q, o, keys=None, start=0, header=None, esc=None: starts.append(start) or next(answers)
         s.ask = lambda *a: ""
         with unittest.mock.patch("sys.stdin.isatty", lambda: True), redirect_stdout(io.StringIO()):
             app.menu(s)

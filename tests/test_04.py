@@ -35,9 +35,11 @@ class WriteCommands(unittest.TestCase):
         self.assertIn("read", got)
 
     def test_dry_run_refuses_write_commands_too(self):
-        app = App("t-wc2", lang="en", write_commands=[["touch"]])
+        # the interpreter itself as the write command: `touch` doesn't exist on Windows
+        app = App("t-wc2", lang="en", write_commands=[[os.path.basename(sys.executable)]])
         d = tempfile.mkdtemp()
-        app.command("make")(lambda s, a: run("touch", os.path.join(d, "x")))
+        make = f"open({os.path.join(d, 'x')!r}, 'w').close()"
+        app.command("make")(lambda s, a: run(sys.executable, "-c", make))
         r, _, _ = quiet(lambda: app.main(["make", "--dry-run"]))
         self.assertEqual(r, 3)  # refused by the rules, with a clear line
         self.assertFalse(os.path.exists(os.path.join(d, "x")))

@@ -7,6 +7,8 @@
 - every command with effects, run with --prova in an empty HOME and working folder, creates nothing, applies no
   step and runs no declared write command;
 - every command with json=True prints valid JSON on stdout with --json;
+- every command run with --prova ends with its outcome (✓ or ✗ and what: App.call adds one when the command doesn't
+  say it) and shows no Python traceback;
 - the tool's code never loads code at run time (exec, eval, importlib, runpy, __import__): configuration is
   read as JSON (App.config)."""
 import io, json, os, re, shutil, sys, tempfile, unittest
@@ -93,6 +95,21 @@ def tests(app, source=None):
                 shutil.rmtree(home, ignore_errors=True)
         return test
 
+    def outcome_test(c, words):
+        def test(self):
+            home = tempfile.mkdtemp()
+            try:
+                out, err, _ = run_cmd([*words, *c.example, "--prova"], home)
+                text = out + err
+                self.assertNotIn("Traceback (most recent call last)", text, f"`{c.name} --prova` shows a traceback")
+                last = [r.strip() for r in out.splitlines() if r.strip()][-1:] or [""]
+                glyphs = (app.theme.yes, app.theme.no, "✓", "✗", "√", "x ")
+                self.assertTrue(last[0].startswith(glyphs) or any(g in last[0] for g in ("╰", "└")),
+                                f"`{c.name} --prova` doesn't end with ✓/✗ and what happened: {last[0]!r}")
+            finally:
+                shutil.rmtree(home, ignore_errors=True)
+        return test
+
     def json_test(c, words):
         def test(self):
             home = tempfile.mkdtemp()
@@ -121,6 +138,7 @@ def tests(app, source=None):
         key = re.sub(r"\W", "_", "_".join(words))
         if c.dry:
             body[f"test_dry_run_{key}"] = dry_test(c, words)
+            body[f"test_outcome_{key}"] = outcome_test(c, words)
         if c.json:
             body[f"test_json_{key}"] = json_test(c, words)
     return type("Contract_" + re.sub(r"\W", "_", app.name), (unittest.TestCase,), body)
