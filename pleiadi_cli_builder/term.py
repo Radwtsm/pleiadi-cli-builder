@@ -136,7 +136,7 @@ CBREAK = {"depth": 0, "saved": None}  # single-key mode kept on while a full scr
 def cbreak(on):
     """Single-key mode for the whole time a screen is open (not toggled per key: what is typed between two reads —
     fast typing, a paste — would land in the line buffer and get lost or arrive only with Enter)."""
-    if WIN or not sys.stdin.isatty():
+    if WIN or not stdin_tty():
         return
     import termios, tty
     fd = sys.stdin.fileno()
@@ -149,6 +149,24 @@ def cbreak(on):
         CBREAK["depth"] -= 1
         if CBREAK["depth"] == 0 and CBREAK["saved"]:
             termios.tcsetattr(fd, termios.TCSADRAIN, CBREAK["saved"])
+
+
+def stdin_tty():
+    """True when a person can type keys: on Windows isatty() is True for NUL too (a character device), so a
+    redirected `< NUL` would hang in getwch(); there only a real console counts."""
+    try:
+        if not sys.stdin or not sys.stdin.isatty():
+            return False
+    except (AttributeError, ValueError):
+        return False
+    if not WIN:
+        return True
+    try:
+        import ctypes, msvcrt
+        mode = ctypes.c_uint32()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()), ctypes.byref(mode)))
+    except (OSError, AttributeError, ValueError):
+        return False
 
 
 def key():
@@ -244,7 +262,9 @@ class Screen:
     def __init__(self, name="tool", title="", theme=None, lang="it", plain_env=None):
         self.name, self.title, self.theme = name, title or name, theme or Theme()
         self.t = TEXTS.get(lang, TEXTS["en"])
-        self.colors = sys.stdout.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+        # PCB_COLORS=1: colors also into a pipe (the contract tests check them); full screen still needs a terminal
+        self.colors = bool(os.environ.get("PCB_COLORS")) or (
+            sys.stdout.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb")
         for s in (sys.stdout, sys.stderr):
             try:
                 s.reconfigure(encoding="utf-8")
@@ -266,7 +286,7 @@ class Screen:
         self.outcome = False  # the command has said how it ended (done(), summary()): App.call adds one otherwise  # colors by meaning of output(); live lines now at the end of the body
         self.focus, self.over, self.stay = None, False, False  # see visible(), out() and App.menu
         self.logo, self.about, self.rows = LOGO, None, []  # the box on top: see header() and banner()
-        self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
+        self.full = self.colors and stdin_tty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.suspended = False
         self.head, self.body, self.foot, self.last = [], [], "", []
@@ -331,7 +351,7 @@ class Screen:
 
     def resume(self):
         self.suspended = False
-        if self.opened and CBREAK["depth"] and not WIN and sys.stdin.isatty():
+        if self.opened and CBREAK["depth"] and not WIN and stdin_tty():
             import tty
             tty.setcbreak(sys.stdin.fileno())
         if self.opened:
@@ -733,7 +753,7 @@ class Screen:
 
     @property
     def interactive(self):
-        return sys.stdin.isatty() and not self.no_input
+        return stdin_tty() and not self.no_input
 
     def secret_input(self, question):
         """A hidden answer (a token, a password): never shown, never kept on screen."""
@@ -767,7 +787,7 @@ class Screen:
             if r.fix:
                 self.todo(r.fix)
             tries = 0  # never forever: at most 3, and none if nobody answers
-            while (r.retry and sys.stdin.isatty() and not self.no_input and tries < 3
+            while (r.retry and stdin_tty() and not self.no_input and tries < 3
                    and self.confirm(self.t["done_q"], self.t["retry"], self.t["skip"])):
                 tries += 1
                 try:
@@ -793,7 +813,8 @@ class Screen:
         self.table(rows, ["phase", "now", "before", "change"], {k: self.t[k] for k in ("phase", "now", "before", "change")})
 
     def summary(self, minutes=None):
-        """The closing box: n/total ok and what is still ✗; it stays on screen after exit."""
+        """The closing box: n/total ok and what is still ✗; it stays on screen after exit. Returns True when nothing
+        is ✗."""
         good = [r for r in self.results if r.ok or r.skipped]
         planned = [r for r in self.results if r.planned]
         everything = len(good) == len(self.results)
@@ -809,7 +830,8 @@ class Screen:
         self.box(lines)
         self.last = self.frame(lines)
         self.outcome = True
-        return everything
+        # True when nothing is ✗: a dry run with steps still to do is not a failure (its exit code stays 0)
+        return all(r.ok or r.skipped or r.planned for r in self.results)
 
     def done(self, text, ok=True):
         """How the command ended, the last line: ✓ in green or ✗ in red, and what."""
@@ -841,7 +863,7 @@ class Screen:
         asked = len(self.body) - 1
         if header:
             self.out(self._menu_header(header, len(options)))
-        if self.colors and sys.stdin.isatty():
+        if self.colors and stdin_tty():
             try:
                 return self._menu(options, recommend=not header, keys=keys, start=start, asked=asked, esc=esc)
             except (OSError, ImportError):

@@ -7,8 +7,10 @@
 - every command with effects, run with --prova in an empty HOME and working folder, creates nothing, applies no
   step and runs no declared write command;
 - every command with json=True prints valid JSON on stdout with --json;
-- every command run with --prova ends with its outcome (✓ or ✗ and what: App.call adds one when the command doesn't
-  say it) and shows no Python traceback;
+- every command, run with colors on and nobody at the keyboard (empty stdin, empty HOME; with --prova when it has
+  effects), raises nothing and shows no traceback, closes every step it shows (⏺) with its ✓/✗, ends with an outcome
+  (✓ green or ✗ red and what; App.call adds one when the command doesn't say it, the summary box counts too) and
+  exits coherently: 0 ⇔ the outcome is not ✗ (ux_problems);
 - the tool's code never loads code at run time (exec, eval, importlib, runpy, __import__): configuration is
   read as JSON (App.config)."""
 import io, json, os, re, shutil, sys, tempfile, unittest
@@ -16,6 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from . import proc, steps
+from .term import ANSI
 
 CALLS, MODULES = {"exec", "eval", "__import__"}, {"importlib", "runpy"}
 
@@ -49,6 +52,44 @@ def code_loading(source):
     return found
 
 
+def ux_problems(raw, code, theme):
+    """What breaks the UX rules in the output `raw` (with its colors) of a command that exited with `code`."""
+    lines = [r for r in raw.splitlines() if r.strip()]
+    plain = [ANSI.sub("", r).strip() for r in lines]
+    found, open_step = [], None
+    for r, raw in zip(plain, lines):
+        if "Traceback (most recent call last)" in r:
+            found.append("a Python traceback")
+        if r.startswith(theme.step + " "):
+            if open_step:
+                found.append(f"step without its ✓/✗: {open_step}")
+            open_step = r
+        # a step's result is indented under it; the command's outcome starts the line
+        elif open_step and ANSI.sub("", raw)[:1] == " " and r.lstrip(theme.attach + " ").startswith((theme.yes, theme.no, "○")):
+            open_step = None
+    if open_step:
+        found.append(f"step without its ✓/✗: {open_step}")
+    if not plain:
+        return found + ["no output at all"]
+    corners = theme.corners
+    if plain[-1].startswith(corners[2]):  # the summary box: a ✗ row inside it = something failed
+        top = max(i for i, r in enumerate(plain) if r.startswith(corners[0]))
+        head = plain[top + 1].strip(" │|")
+        failed = any(r.strip(" │|").startswith(theme.no + " ") for r in plain[top + 1:-1])
+        last_raw = None
+    else:
+        head, last_raw = plain[-1], lines[-1]
+        if not head.startswith((theme.yes, theme.no)):
+            return found + [f"no outcome at the end (✓/✗ and what): {head!r}"]
+        failed = head.startswith(theme.no)
+        color = theme.error if failed else theme.ok
+        if f"\033[{color}m" not in last_raw:
+            found.append(f"outcome without its color ({'red' if failed else 'green'}): {head!r}")
+    if failed and code == 0 or (not failed and code != 0):
+        found.append(f"exit code {code} but the outcome says {head!r}")
+    return found
+
+
 def _tree(root):
     return sorted(os.path.relpath(os.path.join(d, x), root) for d, dirs, fs in os.walk(root) for x in dirs + fs)
 
@@ -66,15 +107,17 @@ def tests(app, source=None):
     the folder of the module that defines its commands)."""
     source = source or _source_of(app)
 
-    def run_cmd(argv, home):
+    def run_cmd(argv, home, colors=False):
         out, err = io.StringIO(), io.StringIO()
-        env = {"HOME": home, "USERPROFILE": home, "NO_COLOR": "1"}
+        env = {"HOME": home, "USERPROFILE": home, "NO_COLOR": "1"} if not colors else \
+            {"HOME": home, "USERPROFILE": home, "PCB_COLORS": "1", "NO_COLOR": ""}
         before, cwd, state, refused = os.getcwd(), app.state_path, list(steps.APPLIED), len(proc.REFUSED)
         os.chdir(home)
         app.state_path = os.path.join(home, ".state-outside", "state.json")  # the app's own state isn't the point
         try:
-            with mock.patch.dict(os.environ, env), redirect_stdout(out), redirect_stderr(err):
-                app.main(argv)
+            with mock.patch.dict(os.environ, env), redirect_stdout(out), redirect_stderr(err), \
+                    mock.patch("sys.stdin", io.StringIO("")):
+                run_cmd.code = app.main(argv)
         finally:
             os.chdir(before)
             app.state_path = cwd
@@ -95,17 +138,18 @@ def tests(app, source=None):
                 shutil.rmtree(home, ignore_errors=True)
         return test
 
-    def outcome_test(c, words):
+    def ux_test(c, words):
         def test(self):
             home = tempfile.mkdtemp()
             try:
-                out, err, _ = run_cmd([*words, *c.example, "--prova"], home)
-                text = out + err
-                self.assertNotIn("Traceback (most recent call last)", text, f"`{c.name} --prova` shows a traceback")
-                last = [r.strip() for r in out.splitlines() if r.strip()][-1:] or [""]
-                glyphs = (app.theme.yes, app.theme.no, "✓", "✗", "√", "x ")
-                self.assertTrue(last[0].startswith(glyphs) or any(g in last[0] for g in ("╰", "└")),
-                                f"`{c.name} --prova` doesn't end with ✓/✗ and what happened: {last[0]!r}")
+                try:
+                    out, err, _ = run_cmd([*words, *c.example, *(["--prova"] if c.dry else [])], home, colors=True)
+                except Exception as e:  # the rule: nothing escapes as an exception
+                    self.fail(f"`{c.name}` raised {type(e).__name__}: {e}")
+                problems = ux_problems(out, run_cmd.code or 0, app.theme)
+                if "Traceback (most recent call last)" in err:
+                    problems.append("a Python traceback on stderr")
+                self.assertEqual(problems, [], f"`{c.name}`: {problems}\n{ANSI.sub('', out)[-600:]}{err[-300:]}")
             finally:
                 shutil.rmtree(home, ignore_errors=True)
         return test
@@ -138,7 +182,7 @@ def tests(app, source=None):
         key = re.sub(r"\W", "_", "_".join(words))
         if c.dry:
             body[f"test_dry_run_{key}"] = dry_test(c, words)
-            body[f"test_outcome_{key}"] = outcome_test(c, words)
+        body[f"test_ux_{key}"] = ux_test(c, words)
         if c.json:
             body[f"test_json_{key}"] = json_test(c, words)
     return type("Contract_" + re.sub(r"\W", "_", app.name), (unittest.TestCase,), body)

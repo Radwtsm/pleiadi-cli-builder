@@ -3,7 +3,7 @@ usage generated from the commands; state kept per computer in ~/.config/<name>/s
 import json, os, re, sys, textwrap, time
 
 from . import access, proc
-from .term import MAC, WIN, Screen, Theme
+from .term import MAC, WIN, Screen, Theme, stdin_tty
 
 HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci", "Invio per tornare al menu",
                "comando sconosciuto", "solo lettura", "--prova", "istantanea del {when} · --aggiorna per riscaricarla"),
@@ -281,7 +281,7 @@ class App:
                 screen.fresh(self.crumbs + [items[i].menu.rstrip(" ›")])
                 code = self.call(items[i], screen, [])
                 screen.results = []  # each item's summary counts only its own steps
-                if not sys.stdin.isatty():
+                if not stdin_tty():
                     return code
                 if not screen.stay:  # a screen closed by a key has nothing left to read
                     screen.ask(screen.dim(t[4]))
@@ -300,7 +300,7 @@ class App:
                 if self.first_run and not self.state().get("first_run_done"):
                     code = self.call(self.commands[self.first_run], screen, [])
                     self.save_state(first_run_done=True)
-                    if not sys.stdin.isatty():
+                    if not stdin_tty():
                         return code
                     screen.results = []  # owner 29/10: after the first setup, straight into the menu
                     screen.ask(screen.dim(HELP.get(self.lang, HELP["en"])[4]))
@@ -323,7 +323,7 @@ class App:
         except KeyboardInterrupt:
             return 130
         except proc.PolicyError as e:  # the rules stopped it: a clear line, not a traceback
-            screen.out(screen.c(screen.theme.error, "✗") + f" {e}")
+            screen.out(screen.c(screen.theme.error, screen.theme.no) + f" {e}")
             return 3
         finally:
             screen.close()
@@ -351,11 +351,11 @@ class App:
                     screen.done(f"{c.menu or c.name}: {type(e).__name__}: {e}", ok=False)
                     screen.info(screen.dim(screen.t["debug"].format(env="PCB_DEBUG")))
                 return 1
-            # screen.stay: a screen the person closed with a key has already shown where it got to
-            if not (screen.outcome or screen.json or section or screen.stay):
-                label = (c.menu or c.name).rstrip(" ›")
+            if not (screen.outcome or screen.json or section):
+                label, stay = (c.menu or c.name).rstrip(" ›"), screen.stay
                 screen.done(f"{label}: {screen.t['done']}" if code == 0 else
                             f"{label}: {screen.t['failed'].format(code=code)}", ok=code == 0)
+                screen.stay = stay  # a screen closed with a key: back to the menu without a pause, as before
             if self.timings and screen.timings and not screen.json and not screen.dry:
                 every = self.state().get("timings", {})
                 screen.timing_table(every.get(c.name))

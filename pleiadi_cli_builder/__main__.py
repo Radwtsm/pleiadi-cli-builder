@@ -115,7 +115,7 @@ def impronta(screen, args):
             sha, expires = server_certificate(host, int(port or 443))
             rows.append({"server": a, "sha256": sha, "scade": expires})
         except (OSError, ValueError) as e:
-            screen.out(screen.c(screen.theme.error, "✗") + f" {a}: {e}")
+            screen.out(screen.c(screen.theme.error, screen.theme.no) + f" {a}: {e}")
     if not args:
         screen.todo("Uso: impronta HOST[:PORTA] …")
     if screen.json:  # the data alone on stdout
@@ -141,7 +141,7 @@ def segreti(screen, args):
     else:
         found = scan.staged()
     for p, kind, n in found:
-        screen.out(screen.c(screen.theme.error, "✗") + f" {p}:{n}  {kind}")
+        screen.out(screen.c(screen.theme.error, screen.theme.no) + f" {p}:{n}  {kind}")
     if found:
         screen.todo("Togli il segreto dal file (leggilo con secret() o da un file fuori dal repo); se è già stato\n"
                     "pubblicato va cambiato, non solo cancellato. Un falso allarme: «scan: ok» in fondo alla riga.")
@@ -176,10 +176,10 @@ def demo(screen, args):
             time.sleep(0.08)
         return True, "20 file"
     screen.header("demo")
-    run_steps(screen, [Step("già fatto", lambda: True),
-                       Step("scarica i file", lambda: False, apply=slow, wait="scarico"),
-                       Step("una cosa da fare a mano", lambda: False, fix="Apri Impostazioni → Rete e premi «Collega»")])
-    return 0
+    ok = run_steps(screen, [Step("già fatto", lambda: True),
+                            Step("scarica i file", lambda: False, apply=slow, wait="scarico"),
+                            Step("una cosa da fare a mano", lambda: False, fix="Apri Impostazioni → Rete e premi «Collega»")])
+    return 0 if ok else 1  # the exit code says what the summary says
 
 
 @app.command("intro", args="[TITOLO] [--resta]", help="l'animazione d'apertura (un tasto la salta)",

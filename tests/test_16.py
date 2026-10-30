@@ -1,5 +1,5 @@
 """0.16: times per phase, colors by meaning, live output, the UX contract."""
-import io, json, os, sys, tempfile, time, unittest
+import io, json, os, sys, tempfile, time, unittest, unittest.mock
 from contextlib import redirect_stderr, redirect_stdout
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -185,7 +185,32 @@ class Rules(unittest.TestCase):
         app.command("loud")(loud)
         case = contract.tests(app, source=__file__ + ".none")
         r = unittest.TextTestRunner(stream=io.StringIO()).run(unittest.TestLoader().loadTestsFromTestCase(case))
-        self.assertEqual([t[0]._testMethodName for t in r.failures], ["test_outcome_loud"])
+        self.assertEqual([t[0]._testMethodName for t in r.failures], ["test_ux_loud"])
+
+
+class UxContract(unittest.TestCase):
+    def setUp(self):
+        self.th = term.Theme(glyphs="full")
+        g = lambda code, t: f"\033[{code}m{t}\033[0m"
+        self.ok, self.ko = g(self.th.ok, "✓") + " done", g(self.th.error, "✗") + " broken"
+
+    def test_good_output(self):
+        from pleiadi_cli_builder.contract import ux_problems
+        out = "⏺ fetch  1/2\n  ⎿ ✓ fetch\n⏺ build  2/2\n  ⎿ ✓ build\n\n" + self.ok
+        self.assertEqual(ux_problems(out, 0, self.th), [])
+        self.assertEqual(ux_problems(self.ko, 1, self.th), [])
+
+    def test_each_rule(self):
+        from pleiadi_cli_builder.contract import ux_problems
+        self.assertIn("step without its ✓/✗: ⏺ fetch  1/2", ux_problems("⏺ fetch  1/2\n" + self.ok, 0, self.th))
+        self.assertTrue(ux_problems("just text", 0, self.th)[0].startswith("no outcome"))
+        self.assertTrue(ux_problems(self.ko, 0, self.th)[0].startswith("exit code 0"))
+        self.assertTrue(ux_problems(self.ok, 2, self.th)[0].startswith("exit code 2"))
+        self.assertTrue(ux_problems("✓ done", 0, self.th)[0].startswith("outcome without its color"))
+
+    def test_no_keyboard_when_stdin_is_not_a_terminal(self):
+        with unittest.mock.patch("sys.stdin", io.StringIO("")):
+            self.assertFalse(term.stdin_tty())
 
 
 if __name__ == "__main__":

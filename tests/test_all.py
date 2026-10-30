@@ -312,7 +312,7 @@ class Ship(unittest.TestCase):
                 break
             data += chunk
         _, status = os.waitpid(pid, 0)
-        self.assertEqual(os.waitstatus_to_exitcode(status), 0, data[-500:])
+        self.assertEqual(os.waitstatus_to_exitcode(status), 1, data[-500:])  # the demo ends with a ✗ step
         self.assertIn(b"\x1b[?1049h", data)  # it really opened the full screen…
         self.assertIn("2/3 a posto".encode(), data)  # …and left the summary on the normal one
 
