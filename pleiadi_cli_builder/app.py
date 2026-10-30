@@ -70,11 +70,14 @@ class App:
         app.main()
     """
     def __init__(self, name, title="", accent=None, theme=None, lang="it", first_run=None, menu_subtitle="",
-                 write_commands=(), session_idle_minutes=5):
+                 write_commands=(), session_idle_minutes=5, banner=None, banner_info=None):
         """write_commands = the programs that change something, as the start of their command line
         (e.g. [["git", "push"], ["rm"]]): run() refuses them inside read-only commands and dry runs.
         session_idle_minutes = in the interactive menu, an access (VPN) stays open between actions and closes
-        after this many minutes without actions (always on exit)."""
+        after this many minutes without actions (always on exit).
+        banner = the logo in the box on top, a few rows of blocks (colored with the accent unless they already have
+        their colors; None: the library's; (): none); banner_info() → more lines beside it: version, folder, context."""
+        self.banner, self.banner_info = banner, banner_info
         self.session_idle_minutes, self._memory = session_idle_minutes, {}
         self.sections, self.prog, self.renamed = {}, name, {}  # prog/renamed: how the host calls this App
         self.name, self.title, self.lang = name, title or name, lang
@@ -206,7 +209,11 @@ class App:
         return add
 
     def screen(self):
-        return Screen(self.name, self.title, self.theme, self.lang)
+        s = Screen(self.name, self.title, self.theme, self.lang)
+        s.about = self.banner_info
+        if self.banner is not None:
+            s.logo = self.banner
+        return s
 
     def _rows(self):
         t = HELP.get(self.lang, HELP["en"])

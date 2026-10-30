@@ -196,9 +196,9 @@ class Sizes(unittest.TestCase):
               "s.close()\n")
 
     def test_frame_checks(self):
-        f = screentest.Frame(["x" * 61, "─" * 60, ""], 60, 4)
+        f = screentest.Frame(["x" * 61, "y", "z", "─" * 60, ""], 60, 4)
         p = f.problems()
-        self.assertTrue(any("4" in x for x in p))
+        self.assertTrue(any("5 righe" in x for x in p))
         self.assertTrue(any("larga 61" in x for x in p))
         self.assertIn("riga dei tasti vuota", p)
 

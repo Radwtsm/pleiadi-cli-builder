@@ -5,8 +5,8 @@ lines — so a test (or Claude, reading text) can check what was on screen and t
     s = run_screen([sys.executable, "-m", "my_tool"], [wait("Cosa vuoi fare?"), size(60, 20), wait("Cosa"), keys("q")])
     assert not s.problems(expect=["Cosa vuoi fare?"]), s.report()
 
-Checks every frame shown at the end of each size (problems()): as many lines as the window, none wider, the
-separator and the key line at the bottom, no Python traceback. Mac and Linux (stdlib pty); Windows: available()
+Checks every frame shown at the end of each size (problems()): no more lines than the window, none wider, the
+separator and the key line under the content, no Python traceback. Mac and Linux (stdlib pty); Windows: available()
 is False and the tests skip."""
 import os, select, signal, struct, time
 
@@ -49,8 +49,8 @@ class Frame:
 
     def problems(self):
         out = []
-        if len(self.lines) != self.rows:
-            out.append(f"{len(self.lines)} righe invece di {self.rows}")
+        if len(self.lines) > self.rows:
+            out.append(f"{len(self.lines)} righe in una finestra di {self.rows}")
         for n, l in enumerate(self.lines, 1):
             if visible_len(l) > self.columns:
                 out.append(f"riga {n} larga {visible_len(l)} (finestra {self.columns}): {l[:40]}…")

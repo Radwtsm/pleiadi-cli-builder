@@ -48,6 +48,9 @@ TEXTS = {
            "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}"},
 }
 
+# the default logo of the box on top; only blocks every console font has (the classic Windows console too)
+LOGO = (" ▄█▄ ", "▀███▀", " ▀█▀ ")
+
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
 
 
@@ -226,7 +229,8 @@ class Screen:
                 self.colors = False
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
-        self.focus, self.over, self.stay = None, False, False  # see draw(), out() and App.menu
+        self.focus, self.over, self.stay = None, False, False  # see visible(), out() and App.menu
+        self.logo, self.about, self.rows = LOGO, None, []  # the box on top: see header() and banner()
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.suspended = False
@@ -319,15 +323,28 @@ class Screen:
             return
         with self.lock:
             self.size = shutil.get_terminal_size((80, 24))
-            w, h = self.size.columns, self.size.lines
-            head = [clip(r, w) for r in self.head] if h >= len(self.head) + 8 else []
-            foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or "  " + self.hint_line(), w)]
-            room = max(1, h - len(head) - len(foot))
-            body = [clip(r, w) for r in self.visible(room)]
-            body += [""] * (room - len(body))
-            lines = head + body + foot
-            sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in lines[:h]) + "\033[J")
+            sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in self.layout(*self.size)) + "\033[J")
             sys.stdout.flush()
+
+    def layout(self, w, h):
+        """The lines of a full screen: the box, the content, then the separator and the bottom line right under the
+        content, like Claude Code: what you type, the keys and the wait line follow the text instead of staying at
+        the bottom of the window, and go down only when the content fills it."""
+        head = self.banner(w, h)
+        head = [clip(r, w) for r in head] if h >= len(head) + 8 else []
+        foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or "  " + self.hint_line(), w)]
+        room = max(1, h - len(head) - len(foot))
+        return (head + [clip(r, w) for r in self.visible(room)] + foot)[:h]
+
+    def banner(self, w, h):
+        """The box on top, always fixed: the logo beside the information when the window has room for it."""
+        if not self.head or not self.logo or not self.rows or w < 60 or h < 20:
+            return self.head
+        wide = max(visible_len(r) for r in self.logo)
+        logo = [self.acc(r.ljust(wide)) if "\033" not in r else r + " " * (wide - visible_len(r)) for r in self.logo]
+        rows = [(logo[i] if i < len(logo) else " " * wide) + "  " + (self.rows[i] if i < len(self.rows) else "")
+                for i in range(max(len(logo), len(self.rows)))]
+        return self.frame(rows)
 
     def visible(self, room):
         """The lines that fit: the last ones; during a question (focus = its line, the selected line) the question
@@ -407,10 +424,16 @@ class Screen:
 
     # ── blocks ──
     def header(self, subtitle=""):
-        """The opening box, like Claude Code's: fixed at the top for the whole session."""
+        """The opening box, like Claude Code's: fixed at the top for the whole session. logo = a few rows of blocks
+        (App(banner=…)), about() = more lines of information (App(banner_info=…)); no logo in a narrow or low window."""
         lines = [self.acc(self.theme.mark + " ") + self.bold(self.title) + self.dim(f"  {self.name}")]
         if subtitle:
             lines.append("  " + subtitle)
+        try:
+            lines += ["  " + str(r) for r in (self.about() if self.about else [])]
+        except Exception:  # the tool's own line about itself must never stop the tool
+            pass
+        self.rows = lines
         if self.full:
             self.head = self.frame(lines)
             self.open()
