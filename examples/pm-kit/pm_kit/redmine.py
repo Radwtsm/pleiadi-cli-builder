@@ -266,7 +266,7 @@ def issue_detail(issue, me, today, statuses=None, seen=None):
         names.append(f"{me['firstname']} {me.get('lastname', '')}".strip())
     sections = [("Descrizione", readable(issue.get("description")) or [("—", "dim")])]
     changed = seen and seen.get("aggiornata") != (issue.get("updated_on") or "")
-    shown = fresh = 0
+    shown = fresh = files = 0
     for j in reversed(issue.get("journals") or []):
         items = _journal(j, statuses, names)
         if items:  # a note after my last look: its lines are new (●, n/N), never folded
@@ -275,20 +275,27 @@ def issue_detail(issue, me, today, statuses=None, seen=None):
             sections.append((f"Nota · {_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", items,
                              shown >= 3 and not new, new))
             shown += 1
-    if changed:
-        news = [(t, None) for t in field_changes(seen, issue)]
-        notes = [(f"{fresh} note nuove più sotto: n le scorre", "dim")] if fresh else []
-        sections.insert(0, ("Cosa è cambiato", news + notes or [("aggiornata (campi non mostrati qui)", "dim")], False,
-                            len(news)))
     rel = [(f"{RELATIONS.get(r.get('relation_type'), r.get('relation_type'))} "
             f"#{r['issue_to_id'] if r.get('issue_id') == issue['id'] else r.get('issue_id')}", None)
            for r in issue.get("relations") or []]
     rel += [(f"sotto-task #{c['id']} {c.get('subject', '')}", None) for c in issue.get("children") or []]
     if rel:
         sections.append(("Relazioni e sotto-task", rel))
-    if issue.get("attachments"):
-        sections.append(("Allegati", [(f"{a.get('filename')} · {_size(a.get('filesize') or 0)}", None)
-                                      for a in issue["attachments"]]))
+    if issue.get("attachments"):  # the ones after my last look first, marked new; same name = a new version
+        after = lambda a: bool(changed and (a.get("created_on") or "") > seen.get("aggiornata", ""))
+        new = sorted((a for a in issue["attachments"] if after(a)), key=lambda a: a.get("created_on") or "", reverse=True)
+        old = [a for a in issue["attachments"] if not after(a)]
+        before = {a.get("filename") for a in old}
+        line = lambda a, why="": f"{a.get('filename')} · {_size(a.get('filesize') or 0)}{why}"
+        sections.append(("Allegati", [(line(a, " · nuova versione" if a.get("filename") in before else " · nuovo"), None)
+                                      for a in new] + [(line(a), None) for a in old], False, len(new)))
+        files = len(new)
+    if changed:
+        news = [(t, None) for t in field_changes(seen, issue)]
+        below = ", ".join(t for t in (fresh and f"{fresh} {'nota' if fresh == 1 else 'note'}", files and f"{files} file") if t)
+        notes = [(f"nuovi più sotto: {below} (n li scorre)", "dim")] if below else []
+        sections.insert(0, ("Cosa è cambiato", news + notes or [("aggiornata (campi non mostrati qui)", "dim")], False,
+                            len(news)))
     return Detail(f"#{issue['id']} · {issue.get('subject', '')} · {(issue.get('project') or {}).get('name', '')}",
                   fields, sections, legend={"alarm": "in ritardo o urgente", "warn": "attenzione (vicina, ferma, ti cita)",
                                             "ok": "assegnata a te"})

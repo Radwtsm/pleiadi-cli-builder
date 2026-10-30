@@ -212,9 +212,25 @@ class News(unittest.TestCase):
         new_notes = [d.sections[n] for n in d.new if d.sections[n][0].startswith("Nota")]
         self.assertTrue(any("@anna puoi guardare il menu?" in t for s in new_notes for t, _ in s[1]))  # after my look
         self.assertTrue(all(not folded for _, _, folded in new_notes))
-        self.assertIn(f"{len(new_notes)} note nuove più sotto: n le scorre", text)
+        self.assertIn(f"nuovi più sotto: {len(new_notes)} {'nota' if len(new_notes) == 1 else 'note'} (n li scorre)", text)
         plain = redmine.issue_detail(issue, {"id": 7}, TODAY, {}, seen=redmine.seen_entries([issue])[str(issue["id"])])
         self.assertNotEqual(plain.sections[0][0], "Cosa è cambiato")  # nothing new: no section
+
+
+    def test_new_files_and_versions(self):
+        issue = dict(DETAIL["issue"], journals=[], updated_on=D(0) + "T08:00:00Z",
+                     attachments=[{"filename": "bozza.png", "filesize": 1024, "created_on": D(-30) + "T09:00:00Z"},
+                                  {"filename": "bozza.png", "filesize": 2048, "created_on": D(-1) + "T09:00:00Z"},
+                                  {"filename": "menu.pdf", "filesize": 4096, "created_on": D(0) + "T07:00:00Z"}])
+        seen = dict(redmine.seen_entries([issue])[str(issue["id"])], aggiornata=D(-10) + "T09:00:00Z")
+        d = redmine.issue_detail(issue, {"id": 7}, TODAY, {}, seen=seen)
+        n = [t for t, _, _ in d.sections].index("Allegati")
+        self.assertEqual([t for t, _ in d.sections[n][1]],  # the new ones first, most recent first
+                         ["menu.pdf · 4 KB · nuovo", "bozza.png · 2 KB · nuova versione", "bozza.png · 1 KB"])
+        self.assertEqual(d.new[n], 2)
+        self.assertIn(("nuovi più sotto: 2 file (n li scorre)", "dim"), d.sections[0][1])
+        none = redmine.issue_detail(issue, {"id": 7}, TODAY, {})  # never looked: nothing is new
+        self.assertEqual(none.new, {})
 
 
 class Indicators(unittest.TestCase):
