@@ -461,7 +461,8 @@ class Screen:
         if self.data(d.as_dict()):
             return
         size = shutil.get_terminal_size((80, 24))
-        pager = Pager(d, min(size.columns - 1, 100) if not self.full else size.columns, size.lines - 2, self.c)
+        pager = Pager(d, min(size.columns - 1, 100) if not self.full else size.columns, size.lines - 2, self.c,
+                      mark=self.theme.accent)
         if not (self.full and self.interactive):
             for l in pager.plain():
                 self.out(l)
@@ -492,7 +493,9 @@ class Screen:
                     self.mode = "type"
                     q = self._type_line("/")
                     self.mode = "read"
-                    if q and not pager.search(q):
+                    if not q:  # an empty search ends the search: n/N back on the new lines
+                        pager.search("")
+                    elif not pager.search(q):
                         self.foot = self.dim(f"  «{q}»: {self.t['not_found']}")
                         self.draw()
                         key()

@@ -208,7 +208,11 @@ class News(unittest.TestCase):
         self.assertFalse(folded)
         text = [t for t, _ in items]
         self.assertIn("stato: Nuova → In corso", text)
-        self.assertTrue(any("@anna puoi guardare il menu?" in t for t in text))  # the note after my last look
+        self.assertEqual(d.new[0], 1)  # the changed field is new, the pointer to the notes is not
+        new_notes = [d.sections[n] for n in d.new if d.sections[n][0].startswith("Nota")]
+        self.assertTrue(any("@anna puoi guardare il menu?" in t for s in new_notes for t, _ in s[1]))  # after my look
+        self.assertTrue(all(not folded for _, _, folded in new_notes))
+        self.assertIn(f"{len(new_notes)} note nuove più sotto: n le scorre", text)
         plain = redmine.issue_detail(issue, {"id": 7}, TODAY, {}, seen=redmine.seen_entries([issue])[str(issue["id"])])
         self.assertNotEqual(plain.sections[0][0], "Cosa è cambiato")  # nothing new: no section
 

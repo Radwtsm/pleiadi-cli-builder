@@ -1,6 +1,7 @@
 """A scrolling detail view (one record: a task, a ticket, a build): key fields fixed at the top, long text below
 that scrolls (arrows, PgUp/PgDn, Home/End), / to search with n to jump to the next hit, sections that fold, colors
-with a meaning declared by the tool plus a legend. Text wraps to the window and rewraps when it changes.
+with a meaning declared by the tool plus a legend. Lines new since the last look are marked ● and n/N jump between
+them (with «2/7» in the bottom line) when no search is on; the view opens on the first one. Text wraps to the window and rewraps when it changes.
 Outside a real terminal: plain text with everything open; with --json: the data.
 
 The paging logic (Pager) has no terminal in it, so it is tested without one."""
@@ -12,26 +13,36 @@ TONES = {"alarm": "31;1", "warn": "33", "ok": "32", "dim": "2"}
 
 
 class Detail:
-    """fields = [(label, value, tone)]; sections = [(title, [(text, tone)], folded=False)]; legend = {tone: meaning}.
-    tone: "alarm", "warn", "ok", "dim" or None."""
+    """fields = [(label, value, tone)]; sections = [(title, [(text, tone)], folded=False, new=0)]; legend = {tone:
+    meaning}. tone: "alarm", "warn", "ok", "dim" or None. new = how many of the section's first lines are new since
+    the last look (True: all of them); a section with new lines never starts folded."""
     def __init__(self, title, fields=(), sections=(), legend=None, actions=None):
         """actions = {key: (label, fn(screen) → message)}: one-key operations on this record (shown in the
         bottom line), e.g. {"d": ("scarica allegati", …), "c": ("copia il numero", …)}."""
         self.title, self.fields, self.legend, self.actions = title, list(fields), dict(legend or {}), dict(actions or {})
         self.sections = [(s[0], list(s[1]), bool(s[2]) if len(s) > 2 else False) for s in sections]
+        new = [(s[3] if len(s) > 3 else 0) for s in sections]
+        self.new = {n: len(self.sections[n][1]) if k is True else min(int(k), len(self.sections[n][1]))
+                    for n, k in enumerate(new) if k}  # {section index: how many first lines are new}
 
     def as_dict(self):
-        return {"title": self.title, "fields": {label: value for label, value, _ in self.fields},
-                "sections": {t: [text for text, _ in items] for t, items, _ in self.sections}}
+        out = {"title": self.title, "fields": {label: value for label, value, _ in self.fields},
+               "sections": {t: [text for text, _ in items] for t, items, _ in self.sections}}
+        if self.new:
+            out["new"] = {self.sections[n][0]: [t for t, _ in self.sections[n][1][:k]] for n, k in self.new.items()}
+        return out
 
 
 class Pager:
-    def __init__(self, detail, width=80, height=24, color=None, select="38;5;153;1;48;5;237"):
-        self.d, self.width, self.height, self.select = detail, width, height, select
+    def __init__(self, detail, width=80, height=24, color=None, select="38;5;153;1;48;5;237", mark="38;5;153"):
+        self.d, self.width, self.height, self.select, self.mark = detail, width, height, select, mark
         self.color = color or (lambda code, text: text)
-        self.folded = {t for t, _, f in detail.sections if f}
+        self.folded = {t for n, (t, _, f) in enumerate(detail.sections) if f and n not in detail.new}
         self.top, self.hits, self.hit, self.query = 0, [], 0, ""
         self.cur = 0  # the section Space opens/closes: marked ▶ (owner 29/10: «deve essere chiaro»)
+        self.news, self.new_at = [], -1  # the first body line of each new line; the one n/N last went to
+        if detail.new:  # opens on the first new line
+            self._next_new(1)
 
     def resize(self, width, height):
         self.width, self.height = width, height
@@ -63,7 +74,7 @@ class Pager:
 
     def lines(self):
         """The body, wrapped to the width; self.owner[i] = the section of line i."""
-        out, self.owner, self.heads = [], [], []
+        out, self.owner, self.heads, self.news = [], [], [], []
         for n, (title, items, _) in enumerate(self.d.sections):
             if out:
                 out.append("")
@@ -79,12 +90,17 @@ class Pager:
             self.owner.append(title)
             if title in self.folded:
                 continue
-            for text, tone in items:
+            new = self.d.new.get(n, 0)
+            for k, (text, tone) in enumerate(items):
+                gutter = self.color(self.mark, "● ") if k < new else "  "  # new since the last look
+                if k < new:
+                    self.news.append(len(out))
                 for raw in str(text).split("\n"):
                     for w in textwrap.wrap(raw, max(10, self.width - 2), break_long_words=True,
                                            replace_whitespace=False) or [""]:
-                        out.append("  " + self.paint(w, tone))
+                        out.append(gutter + self.paint(w, tone))
                         self.owner.append(title)
+                        gutter = "  "
         return out
 
     def rows(self):
@@ -94,9 +110,11 @@ class Pager:
         return max(0, len(self.lines()) - self.rows())
 
     def render(self):
-        body = self.lines()[self.top:self.top + self.rows()]
-        if self.hits:  # the current hit stands out
-            cur = self.hits[self.hit] - self.top
+        lines = self.lines()
+        body = lines[self.top:self.top + self.rows()]
+        at = self.hits[self.hit] if self.hits else self.news[self.new_at] if 0 <= self.new_at < len(self.news) else None
+        if at is not None:  # the current hit, or the new line n/N went to, stands out
+            cur = at - self.top
             if 0 <= cur < len(body):
                 body[cur] = self.color("7", ANSI.sub("", body[cur]))
         return self.header() + body + [""] * (self.rows() - len(body)) + self.legend_lines()
@@ -125,9 +143,23 @@ class Pager:
         after = [n for n, h in enumerate(self.heads) if h >= self.top]
         self.cur = after[0] if after else len(self.heads) - 1
 
+    def _next_new(self, step):
+        """n/N without a search: to the next/previous new line (round), with its section title in view."""
+        self.lines()
+        if self.news:
+            self.new_at = (self.new_at + step) % len(self.news) if self.new_at >= 0 or step > 0 else len(self.news) - 1
+            self.top = max(0, min(self.news[self.new_at] - 1, self.max_top()))
+            self._follow()
+
     def nav(self):
         """The generic keys (the record's own operations are shown apart, highlighted: Screen.shortcut_line)."""
-        return "↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · n successiva · q chiudi"
+        self.lines()
+        if self.news and not self.hits:  # NBSP: «nuove 2/7» stays one label (term.pairs splits on spaces)
+            at = f"{self.new_at + 1}/{len(self.news)}" if self.new_at >= 0 else str(len(self.news))
+            n = f"n/N nuove\u00a0{at}"
+        else:
+            n = "n successiva"
+        return f"↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · {n} · q chiudi"
 
     def hint(self):
         acts = " · ".join(f"{k} {label}" for k, (label, _) in self.d.actions.items())
@@ -171,6 +203,8 @@ class Pager:
         elif k in ("n", "N") and self.hits:
             self.hit = (self.hit + (1 if k == "n" else -1)) % len(self.hits)
             self._show_hit()
+        elif k in ("n", "N"):  # no search on: the new lines
+            self._next_new(1 if k == "n" else -1)
         elif k == "/":
             return "search"
         elif k in ("q", "esc", "enter"):

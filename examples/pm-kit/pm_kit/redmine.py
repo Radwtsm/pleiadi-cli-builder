@@ -240,7 +240,8 @@ def _journal(j, statuses, names):
 def issue_detail(issue, me, today, statuses=None, seen=None):
     """A Detail for one issue: key fields with meaning colors (late, urgent, mine, still, mentions me), the
     description, notes and changes most recent first (older ones folded), relations and sub-tasks, attachments.
-    seen = what I saw last time (seen_entries): if it changed since, «Cosa è cambiato» comes first."""
+    seen = what I saw last time (seen_entries): if it changed since, «Cosa è cambiato» comes first (the changed
+    fields) and the notes after it are marked new (●, n/N jump between them)."""
     from pleiadi_cli_builder import Detail
     statuses, me = statuses or {}, me or {}
     is_open = not (issue.get("status") or {}).get("is_closed", False)
@@ -264,19 +265,21 @@ def issue_detail(issue, me, today, statuses=None, seen=None):
     if me.get("firstname"):
         names.append(f"{me['firstname']} {me.get('lastname', '')}".strip())
     sections = [("Descrizione", readable(issue.get("description")) or [("—", "dim")])]
-    if seen and seen.get("aggiornata") != (issue.get("updated_on") or ""):
-        news = [(t, None) for t in field_changes(seen, issue)]
-        for j in reversed(issue.get("journals") or []):
-            if (j.get("created_on") or "") > seen.get("aggiornata", ""):
-                news += [(f"{_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", "dim")]
-                news += [("  " + t, tone) for t, tone in _journal(j, statuses, names)]
-        sections.insert(0, ("Cosa è cambiato", news or [("aggiornata (campi non mostrati qui)", "dim")]))
-    shown = 0
+    changed = seen and seen.get("aggiornata") != (issue.get("updated_on") or "")
+    shown = fresh = 0
     for j in reversed(issue.get("journals") or []):
         items = _journal(j, statuses, names)
-        if items:
-            sections.append((f"Nota · {_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", items, shown >= 3))
+        if items:  # a note after my last look: its lines are new (●, n/N), never folded
+            new = bool(changed and (j.get("created_on") or "") > seen.get("aggiornata", ""))
+            fresh += new
+            sections.append((f"Nota · {_day(j.get('created_on'))} · {(j.get('user') or {}).get('name', '')}", items,
+                             shown >= 3 and not new, new))
             shown += 1
+    if changed:
+        news = [(t, None) for t in field_changes(seen, issue)]
+        notes = [(f"{fresh} note nuove più sotto: n le scorre", "dim")] if fresh else []
+        sections.insert(0, ("Cosa è cambiato", news + notes or [("aggiornata (campi non mostrati qui)", "dim")], False,
+                            len(news)))
     rel = [(f"{RELATIONS.get(r.get('relation_type'), r.get('relation_type'))} "
             f"#{r['issue_to_id'] if r.get('issue_id') == issue['id'] else r.get('issue_id')}", None)
            for r in issue.get("relations") or []]
