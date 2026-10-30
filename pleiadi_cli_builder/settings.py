@@ -140,17 +140,19 @@ def reset(path, settings, dry=False):
     return gone
 
 
-def ask_value(screen, setting, current):
+def ask_value(screen, setting, current, crumbs=()):
     """The question for one setting: a choice for yesno/choice, a typed answer for the others (the current value
-    proposed; «-» = not set). KEEP when nothing changes."""
+    proposed; «-» = not set). KEEP when nothing changes. It replaces the list on screen; crumbs = where it is."""
     t = screen.t
+    screen.fresh([*crumbs, setting.label])
     if setting.edit:
         return setting.edit(screen, current)
     if setting.kind in ("yesno", "choice"):
         opts = [(True, t["yes"]), (False, t["no"])] if setting.kind == "yesno" else setting.choices
         now = current if current is not None else setting.default
         labels = [label + (f"  {t['current']}" if v == now else "") for v, label in opts] + [t["back"]]
-        i = screen.choose(setting.label + (f" · {setting.note}" if setting.note else ""), labels)
+        i = screen.choose(setting.label + (f" · {setting.note}" if setting.note else ""), labels,
+                          start=next((n for n, (v, _) in enumerate(opts) if v == now), 0))
         return KEEP if i == len(opts) else opts[i][0]
     shown = "" if current is None else setting.show(current, t)
     text = screen.ask(f"{setting.label}" + (f" ({setting.note})" if setting.note else "") + f" · {t['dash_unset']}",
@@ -197,20 +199,19 @@ def edit_settings(screen, path, settings, args=(), actions=(), on_reset=None):
             screen.table(rs, ["label", "shown", "key"], {"label": t["setting"], "shown": t["value"], "key": t["key"]})
             screen.info(screen.dim(t["settings_cli"].format(path=path)))
         return 0
-    actions, msg = list(actions), ""
+    actions, msg, pos, crumbs = list(actions), "", 0, [t["settings"]]
     while True:
         rs = rows(path, settings, t)
         w = max(len(r["label"]) for r in rs)
         labels = [f"{r['label']:<{w}}  {r['shown']}" for r in rs] + [label for label, _ in actions] + \
                  [t["reset"], t["back"]]
-        if msg:
-            screen.info(msg)
-        i = screen.choose(t["settings_q"], labels, header=f"{t['setting']:<{w}}  {t['value']}")
+        screen.fresh(crumbs, msg)  # one list on screen, never one under the other
+        i = pos = screen.choose(t["settings_q"], labels, header=f"{t['setting']:<{w}}  {t['value']}", start=pos)
         msg = ""
         if i < len(rs):
             s = settings[i]
             try:
-                value = ask_value(screen, s, rs[i]["value"])
+                value = ask_value(screen, s, rs[i]["value"], crumbs)
             except ValueError as e:
                 msg = screen.c(screen.theme.error, screen.theme.no) + f" {s.label}: {e}"
                 continue
@@ -221,14 +222,17 @@ def edit_settings(screen, path, settings, args=(), actions=(), on_reset=None):
                    screen.c(screen.theme.ok, screen.theme.yes) + f" {s.label} = {s.show(value, t)}")
         elif i < len(rs) + len(actions):
             label, fn = actions[i - len(rs)]
+            screen.fresh([*crumbs, label])
             try:
                 msg = fn(screen) or label
             except Exception as e:  # an action that fails says why, the screen stays open
                 msg = f"{label}: {e}"
         elif i == len(rs) + len(actions):
+            screen.fresh([*crumbs, t["reset"]])
             if screen.confirm(t["reset_q"], t["reset_yes"], t["back"]):
                 gone = reset(path, settings, dry=screen.dry)
                 screen.info(t["reset_done"].format(n=len(gone)))
                 return (on_reset(screen) or 0) if on_reset and not screen.dry else 0
         else:
+            screen.stay = True
             return 0

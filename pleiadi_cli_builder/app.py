@@ -256,19 +256,20 @@ class App:
         t = HELP.get(self.lang, HELP["en"])
         items = self._menu_items()
         letters = self.menu_keys(items)
-        code = 0
+        code = i = 0
         screen.clear()
         screen.header(self.menu_subtitle)
         with access.session(self.session_idle_minutes):  # a VPN opened for one action serves the next ones
-            while True:  # back to the menu after each item, until «Quit»
-                i = screen.choose(t[2], [c.menu for c in items] + [t[3]], keys=letters)
+            while True:  # back to the menu after each item, until «Quit»: on the item you came from
+                i = screen.choose(t[2], [c.menu for c in items] + [t[3]], keys=letters, start=i)
                 if i == len(items):
                     return code
                 code = self.call(items[i], screen, [])
                 screen.results = []  # each item's summary counts only its own steps
                 if not sys.stdin.isatty():
                     return code
-                screen.ask(screen.dim(t[4]))
+                if not screen.stay:  # a screen closed by a key has nothing left to read
+                    screen.ask(screen.dim(t[4]))
                 screen.clear()
                 screen.header(self.menu_subtitle)
 

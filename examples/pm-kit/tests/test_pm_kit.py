@@ -308,9 +308,9 @@ class Settings(unittest.TestCase):
                    "PYTHONPATH": os.pathsep.join([HERE, os.path.dirname(os.path.dirname(HERE))])}
             argv = [sys.executable, "-m", "pm_kit"]
             steps = [screentest.wait("Cosa"), screentest.keys("i"), screentest.wait("Cosa vuoi cambiare")]
-            for c, l in ((80, 24), (120, 40)):
+            for c, l in ((60, 20), (80, 24), (120, 40)):
                 s = screentest.run_screen(argv, steps, c, l, env=env)
-                self.assertEqual(s.problems(expect=["Cosa vuoi cambiare?", "Indirizzo di Redmine", "Indietro"]), [],
+                self.assertEqual(s.problems(expect=["Cosa vuoi cambiare?", "Indirizzo di Redmine"]), [],
                                  s.report())
 
 

@@ -130,7 +130,7 @@ class FakeScreen:
         self.dry = self.json = False
         self.said, self.asked = [], []
 
-    def choose(self, question, options, header=None, keys=None):
+    def choose(self, question, options, header=None, keys=None, start=0):
         self.asked.append((question, options))
         return self.answers.pop(0)
 
@@ -144,6 +144,11 @@ class FakeScreen:
 
     def info(self, text):
         self.said.append(term.ANSI.sub("", text))
+
+    def fresh(self, crumbs=(), note=""):
+        self.crumbs = list(crumbs)
+        if note:
+            self.info(note)
 
     c = staticmethod(lambda code, text: text)
 

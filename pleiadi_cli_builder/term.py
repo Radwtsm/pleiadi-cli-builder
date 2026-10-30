@@ -19,7 +19,7 @@ TEXTS = {
            "back": "Indietro", "not_found": "non trovato (un tasto per continuare)",
            "hint_board": "↑↓ muovi · Spazio spunta · a tutte · Invio fatto · q esci",
            "checked": "{n} di {tot} spuntate",
-           "settings_q": "Cosa vuoi cambiare?", "setting": "Impostazione", "value": "Valore", "key": "nome",
+           "settings": "Impostazioni", "settings_q": "Cosa vuoi cambiare?", "setting": "Impostazione", "value": "Valore", "key": "nome",
            "unset": "—", "default": "(predefinito)", "current": "(attuale)", "dash_unset": "- = non impostato",
            "reset": "Rifai da capo", "reset_q": "Tolgo tutte queste impostazioni e rifaccio la preparazione?",
            "reset_yes": "Sì, rifai da capo", "reset_done": "{n} impostazioni tolte",
@@ -38,7 +38,7 @@ TEXTS = {
            "back": "Back", "not_found": "not found (any key to go on)",
            "hint_board": "↑↓ move · Space check · a all · Enter done · q quit",
            "checked": "{n} of {tot} checked",
-           "settings_q": "What do you want to change?", "setting": "Setting", "value": "Value", "key": "name",
+           "settings": "Settings", "settings_q": "What do you want to change?", "setting": "Setting", "value": "Value", "key": "name",
            "unset": "—", "default": "(default)", "current": "(current)", "dash_unset": "- = not set",
            "reset": "Start over", "reset_q": "Remove all these settings and run the setup again?",
            "reset_yes": "Yes, start over", "reset_done": "{n} settings removed",
@@ -54,9 +54,9 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
 class Theme:
     """Colors as SGR codes (e.g. "38;5;153" or "38;2;232;37;63"), the spinner frames and the glyphs."""
     FULL = dict(spinner="✦✧⋆·⋆✧", mark="✦", step="⏺", attach="⎿", arrow="→", prompt="❯", yes="✓", no="✗",
-                corners="╭╮╰╯")
+                corners="╭╮╰╯", crumb="›")
     # only characters every console font has (the classic Windows console: Consolas, Lucida Console)
-    SAFE = dict(spinner="|/-\\", mark="*", step="●", attach="└", arrow="→", prompt=">", yes="√", no="x",
+    SAFE = dict(spinner="|/-\\", mark="*", step="●", attach="└", arrow="→", prompt=">", yes="√", no="x", crumb=">",
                 corners="┌┐└┘")
 
     def __init__(self, accent="38;5;153", ok="32", error="31", dim="2", bold="1", glyphs=None, warn="33",
@@ -226,6 +226,7 @@ class Screen:
                 self.colors = False
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
+        self.focus, self.over, self.stay = None, False, False  # see draw(), out() and App.menu
         self.full = self.colors and sys.stdin.isatty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.suspended = False
@@ -305,7 +306,10 @@ class Screen:
             print(line, file=sys.stderr if self.json else sys.stdout)  # --json: stdout only for the data
             return
         self.open()
+        self.stay = False
         with self.lock:
+            if self.over:  # the first thing an action of a full view says replaces that view
+                self.body, self.over = [], False
             self.body += line.split("\n")
             del self.body[:-500]
         self.draw()
@@ -319,11 +323,34 @@ class Screen:
             head = [clip(r, w) for r in self.head] if h >= len(self.head) + 8 else []
             foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or "  " + self.hint_line(), w)]
             room = max(1, h - len(head) - len(foot))
-            body = [clip(r, w) for r in self.body[-room:]]
+            body = [clip(r, w) for r in self.visible(room)]
             body += [""] * (room - len(body))
             lines = head + body + foot
             sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in lines[:h]) + "\033[J")
             sys.stdout.flush()
+
+    def visible(self, room):
+        """The lines that fit: the last ones; during a question (focus = its line, the selected line) the question
+        stays on top and the selected row stays in view, however low the window."""
+        if not self.focus or len(self.body) <= room:
+            return self.body[-room:]
+        q, sel = self.focus
+        top = q if sel - q < room else sel - room + 2
+        return self.body[top:top + room] if top == q else [self.body[q]] + self.body[top:sel + 1]
+
+    def fresh(self, crumbs=(), note=""):
+        """In a menu or a screen that loops, the next question replaces the previous one instead of piling up: the
+        box stays on top, under it where you are («Settings › Style») and the outcome of the last action. Without
+        a real terminal only the note is said (the questions stay one under the other)."""
+        if not self.full:
+            if note:
+                self.info(note)
+            return
+        self.clear()
+        if crumbs:
+            self.out("  " + self.dim(f" {self.theme.crumb} ".join(crumbs)))
+        if note:
+            self.out("    " + note)
 
     def clear(self):
         if self.full:
@@ -470,6 +497,17 @@ class Screen:
         self.out("    " + count)
         return None
 
+    def action(self, fn, label, *args):
+        """Runs a one-key action of a full view: it may ask (`choose`, `confirm`, `ask`) and wait (`wait`) — what it
+        says replaces the view until it ends, then the view comes back. Returns the message; one that fails says why."""
+        self.over = True
+        try:
+            return fn(*args) or label
+        except Exception as e:  # the view stays open
+            return f"{label}: {e}"
+        finally:
+            self.over = False
+
     def detail(self, d):
         """A Detail (pleiadi_cli_builder.detail): JSON with --json, plain text without a real terminal, otherwise
         the scrolling view until q/Esc/Enter."""
@@ -497,10 +535,8 @@ class Screen:
                 self.foot = ""
                 if isinstance(what, tuple):  # a one-key action: its message stays until the next key
                     label, fn = d.actions[what[1]]
-                    try:
-                        msg = fn(self) or label
-                    except Exception as e:  # an action that fails says why, the view stays open
-                        msg = f"{label}: {e}"
+                    msg = self.action(fn, label, self)
+                    self.mode = "read"
                     self.foot = "  " + self.acc(self.theme.arrow + " ") + str(msg)
                     continue
                 if what == "quit":
@@ -519,7 +555,7 @@ class Screen:
         finally:
             with self.lock:
                 self.head, self.body = saved
-            self.mode = "idle"
+            self.mode, self.stay = "idle", True  # closing it was the answer: no «press Enter» after
             self.draw()
 
     def board(self, b):
@@ -540,7 +576,11 @@ class Screen:
         view = BoardView(b, color=self.c, select=f"{th.accent};1;{th.select}", error=th.error, dim=th.dim,
                          check=th.yes, texts=self.t)
 
+        acting = threading.Event()
+
         def paint():  # also from the background cells, as each one arrives
+            if acting.is_set():
+                return
             with self.lock:
                 size = shutil.get_terminal_size((80, 24))
                 view.resize(size.columns, size.lines - 2)
@@ -560,10 +600,12 @@ class Screen:
                 if isinstance(what, tuple):
                     rows = view.targets()
                     label, fn = b.actions[what[1]]
+                    acting.set()  # the cells filling in the background must not draw over its question
                     try:
-                        msg = fn(self, rows) or label
-                    except Exception as e:  # an action that fails says why, the table stays open
-                        msg = f"{label}: {e}"
+                        msg = self.action(fn, label, self, rows)
+                    finally:
+                        acting.clear()
+                    self.mode = "read"
                     self.foot = "  " + self.acc(th.arrow + " ") + str(msg)
                     b.start(on_change=paint, rows=rows)  # what the action changed shows up by itself
                     continue
@@ -574,7 +616,7 @@ class Screen:
         finally:
             with self.lock:
                 self.head, self.body = saved
-            self.mode = "idle"
+            self.mode, self.stay = "idle", True
             self.draw()
 
     def _type_line(self, prompt):
@@ -679,18 +721,20 @@ class Screen:
             self.no_input, r = True, ""
         return r or default
 
-    def choose(self, question, options, header=None, keys=None):
+    def choose(self, question, options, header=None, keys=None, start=0):
         """options = [text]; the first is the recommended one. Returns the index. Arrows + Enter (or the number);
         without a real terminal: type the number. header = column titles shown above the options (a table).
-        keys = one letter per option (None: none): shown as a chip on its row, that letter picks it at once."""
+        keys = one letter per option (None: none): shown as a chip on its row, that letter picks it at once.
+        start = the option the cursor starts on (coming back from where you went in)."""
         keys = list(keys or [])
         self.out("")
         self.out("  " + self.acc("?") + " " + self.bold(question))
+        asked = len(self.body) - 1
         if header:
             self.out(self._menu_header(header, len(options)))
         if self.colors and sys.stdin.isatty():
             try:
-                return self._menu(options, recommend=not header, keys=keys)
+                return self._menu(options, recommend=not header, keys=keys, start=start, asked=asked)
             except (OSError, ImportError):
                 pass  # no single keys (odd console): fall back to the number
         for i, o in enumerate(options):
@@ -729,11 +773,11 @@ class Screen:
         pad = " " * (4 + len(str(n)) + 2)
         return pad + self.bold(header) + "\n" + pad + self.dim("─" * visible_len(header))
 
-    def _menu(self, options, recommend=True, keys=()):
+    def _menu(self, options, recommend=True, keys=(), start=0, asked=0):
         rec = "  " + self.t["recommended"] if recommend else ""
         letter = {k: i for i, k in enumerate(keys) if k}
         row = lambda i, o: self._menu_row(i, o, sel, n, rec, keys[i] if i < len(keys) else None)
-        sel, n = 0, len(options)
+        sel, n = min(max(0, start), len(options) - 1), len(options)
         self.mode = "choose"
 
         def move(k):
@@ -741,8 +785,9 @@ class Screen:
                     int(k) - 1 if k.isdigit() and 1 <= int(k) <= n else sel)
         if self.full:  # the options stay in place; afterwards one line with the answer
             with self.lock:
-                start = len(self.body)
+                first = len(self.body)
                 self.body += [row(i, o) for i, o in enumerate(options)]
+                self.focus = (asked, first + sel)
             self.draw()
             while True:
                 k = key()
@@ -753,10 +798,12 @@ class Screen:
                     break
                 sel = move(k)
                 with self.lock:
-                    self.body[start:start + n] = [row(i, o) for i, o in enumerate(options)]
+                    self.body[first:first + n] = [row(i, o) for i, o in enumerate(options)]
+                    self.focus = (asked, first + sel)
                 self.draw()
             with self.lock:
-                self.body[start:] = ["    " + self.acc(self.theme.prompt + " ") + options[sel]]
+                self.body[first:] = ["    " + self.acc(self.theme.prompt + " ") + options[sel]]
+                self.focus = None
             self.mode = "idle"
             self.draw()
             return sel
