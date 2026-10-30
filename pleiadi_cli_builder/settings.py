@@ -20,11 +20,14 @@ class Setting:
     [(value, label)]), "number", "list" (comma-separated), "folder" or "command" (a command line). default = the
     value when it is not set. note = one line on what it changes. check(value) → True, or the reason it is refused.
     show(value) → text and parse(text) → value replace the kind's own; edit(screen, current) → value (or KEEP)
-    replaces the question (e.g. several answers for one setting)."""
+    replaces the question (e.g. several answers for one setting). A setting that lives outside the JSON (the
+    PATH, a system preference): read() → its real value (shown instead of the saved one), apply(value) → None or
+    the reason it failed, called after check and before saving (failed = nothing saved; never with --prova)."""
     def __init__(self, key, label, kind="text", choices=(), default=None, note="", check=None, show=None, parse=None,
-                 edit=None):
+                 edit=None, read=None, apply=None):
         self.key, self.label, self.kind, self.choices, self.default = key, label, kind, list(choices), default
         self.note, self._check, self._show, self._parse, self.edit = note, check, show, parse, edit
+        self.read, self.apply = read, apply
 
     def show(self, value, t):
         """The value as a person reads it; «—» when it is not set."""
@@ -86,8 +89,15 @@ class Setting:
 
 
 def values(path, settings):
+    """{key: value}: the saved one, or for a setting with read() the real one (the saved one if read fails)."""
     cfg = read_json(path, {}) or {}
-    return {s.key: cfg.get(s.key) for s in settings}
+    out = {}
+    for s in settings:
+        try:
+            out[s.key] = s.read() if s.read else cfg.get(s.key)
+        except Exception:  # a system that can't be asked: what was saved
+            out[s.key] = cfg.get(s.key)
+    return out
 
 
 def rows(path, settings, t):
@@ -102,6 +112,13 @@ def set_value(path, setting, value, dry=False):
     why = setting.check(value)
     if why or dry:
         return why
+    if setting.apply:
+        try:
+            why = setting.apply(value)
+        except Exception as e:  # failed outside the JSON: nothing saved, the reason shown
+            why = str(e) or type(e).__name__
+        if why:
+            return str(why)
     if setting.kind == "folder" and value:
         os.makedirs(value, exist_ok=True)
     cfg = read_json(path, {}) or {}

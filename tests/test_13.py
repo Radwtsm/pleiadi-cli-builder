@@ -64,6 +64,33 @@ def run(args, path, json=False, dry=False):
     return code, buf.getvalue()
 
 
+class OutsideTheJson(unittest.TestCase):
+    """A setting applied to the system (e.g. the PATH): apply before saving, read back from the system."""
+    def test_apply_then_read(self):
+        system = {"path": "/a"}
+        st = Setting("path", "PATH", read=lambda: system["path"],
+                     apply=lambda v: "non scrivibile" if v == "/ro" else system.update(path=v))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.json")
+            self.assertEqual(set_value(path, st, "/ro"), "non scrivibile")
+            self.assertFalse(os.path.exists(path))  # failed outside: nothing saved
+            self.assertIsNone(set_value(path, st, "/b", dry=True))
+            self.assertEqual(system["path"], "/a")  # --prova: not applied
+            self.assertIsNone(set_value(path, st, "/b"))
+            system["path"] = "/c"  # changed elsewhere: the screen shows the real one
+            from pleiadi_cli_builder.settings import values
+            self.assertEqual(values(path, [st]), {"path": "/c"})
+            self.assertEqual(read_json(path), {"path": "/b"})
+
+    def test_apply_that_raises(self):
+        st = Setting("p", "P", apply=lambda v: 1 / 0, read=lambda: 1 / 0)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "c.json")
+            self.assertIn("division", set_value(path, st, "x"))
+            from pleiadi_cli_builder.settings import values
+            self.assertEqual(values(path, [st]), {"p": None})
+
+
 class CommandLine(unittest.TestCase):
     def test_list_get_set(self):
         with tempfile.TemporaryDirectory() as d:
