@@ -7,6 +7,7 @@ un'istantanea dei dati (`--aggiorna` per riscaricarla), tabella o `--json`.
 | Comando | Cosa mostra |
 |---|---|
 | `pm-kit setup` | chiede indirizzo e utente (file JSON) e la chiave API (portachiavi); si può rilanciare |
+| `pm-kit impostazioni` | (menu: Impostazioni, tasto `i`) ogni impostazione con il suo valore, Invio la cambia: indirizzo, utente, ruolo, progetti, copia locale, minuti fra i download, cartella degli allegati, VPN (controlla che i programmi esistano), minuti di VPN aperta, stati negli indicatori; «Cambia la chiave API»; «Rifai da capo» (toglie impostazioni e chiave, rilancia la preparazione). Da riga di comando: `impostazioni NOME VALORE` («-» = predefinito), `--json` |
 | `pm-kit doctor` | configurazione, chiave, Redmine che risponde, impronta del certificato che scade |
 | `pm-kit mie` | le task aperte assegnate a me: il download leggero, per tutti; ● sulle task cambiate (o nuove per me) da quando le ho viste |
 | `pm-kit novita [--visto]` | cosa è cambiato sulle mie task dall'ultima volta (stato, scadenza, fatto, priorità, assegnatario, o solo note); Invio apre la task, che da lì conta come vista; `--visto` le segna tutte. La prima volta fissa il punto di partenza. Cosa ho visto sta in `viste.json` accanto alle copie (niente titoli né testi) |

@@ -12,13 +12,14 @@ Configurazione (dato, JSON): $PM_KIT_CONFIG oppure ~/.config/pm-kit/config.json
                                             negli indicatori gli stati di Redmine raggruppati così (il resto: «altro»)
      "ca_file": "...", oppure "pin_sha256": "...", "pin_expires": "AAAA-MM-GG",   certificato interno
      "vpn": {"up": [...], "down": [...], "status": [...]}}                 la VPN, aperta solo per scaricare
-La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file.
+La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file. Tutto si cambia da «Impostazioni»
+(o `pm-kit impostazioni NOME VALORE`), senza toccare il file; «Rifai da capo» riparte da una preparazione pulita.
 Novità: cosa ho visto di ogni mia task (ora di aggiornamento, stato, scadenza, fatto, priorità, assegnatario; niente
 titoli né testi) sta in viste.json accanto alle copie locali: ● nella lista finché non la apro."""
-import datetime, os, shlex, urllib.error
+import datetime, os, shlex, shutil, urllib.error
 
-from pleiadi_cli_builder import (App, HTTPError, ReadOnlyClient, Step, copy_to_clipboard, credentials, pin_step,
-                                 read_json, run, run_steps, secret, temporary, write_json)
+from pleiadi_cli_builder import (KEEP, App, HTTPError, ReadOnlyClient, Setting, Step, copy_to_clipboard, credentials,
+                                 edit_settings, pin_step, read_json, run, run_steps, secret, temporary, write_json)
 from pm_kit import redmine
 
 app = App("pm-kit", title="PM kit", accent="#4a6cf7", menu_subtitle="i progetti in lavorazione")
@@ -56,7 +57,8 @@ def why(e):
     if isinstance(e, HTTPError):
         return {401: f"HTTP 401: chiave API sbagliata o scaduta (rifai `{app.cmd('setup')}`)",
                 403: "HTTP 403: la tua utenza non vede questi dati"}.get(e.status, str(e))
-    return f"Redmine non risponde ({getattr(e, 'reason', e)}): VPN accesa? indirizzo giusto?"
+    return (f"Redmine non risponde ({getattr(e, 'reason', e)}): VPN accesa? indirizzo giusto? "
+            f"(`{app.cmd('impostazioni')}`)")
 
 
 def stored_key(cfg):
@@ -112,8 +114,8 @@ def everything(screen, args):
                                     "segue i progetti. Cosa faccio?", f"Niente: mi bastano le mie task ({app.cmd('mie')})",
                                     "Scarica tutto")
     if not wanted:
-        return None, ("Scaricare tutto Redmine serve a chi segue i progetti: aggiungi --tutti (o \"ruolo\": \"pm\" nella "
-                      f"configurazione). Per le tue task: {app.cmd('mie')}; per cercarne altre: {app.cmd('task')} --progetto …")
+        return None, ("Scaricare tutto Redmine serve a chi segue i progetti: aggiungi --tutti (o "
+                      f"`{app.cmd('impostazioni')} ruolo pm`). Per le tue task: {app.cmd('mie')}; per cercarne altre: {app.cmd('task')} --progetto …")
 
     def fetch():
         with vpn(cfg, screen), screen.wait("scarico tutto da Redmine"):
@@ -385,6 +387,102 @@ def stato(screen, args):
     return 0
 
 
+# ── settings: everything a person may get wrong at setup, changeable from the tool ──
+def edit_vpn(screen, current):
+    """{} = no VPN; otherwise the three command lines (status optional). ValueError without up and down."""
+    if screen.confirm("Per arrivare a Redmine serve una VPN?", "No", "Sì"):
+        return {}
+    now = (current or {})
+    lines = {k: screen.ask(f"Comando che {what} la VPN:", " ".join(shlex.quote(w) for w in now.get(k) or []))
+             for k, what in (("up", "accende"), ("down", "spegne"), ("status", "dice se è accesa (esce con 0 se sì)"))}
+    if not lines["up"] or not lines["down"]:
+        raise ValueError("servono almeno i comandi per accenderla e spegnerla")
+    return {k: shlex.split(v) for k, v in lines.items() if v}
+
+
+def show_vpn(v):
+    if v is None:
+        return "— (non ancora detto)"
+    return f"sì: {' '.join(v['up'])}" if v.get("up") else "non serve"
+
+
+def vpn_problem(v):
+    """The programs named by the VPN commands must exist (checked without running them)."""
+    for k in ("up", "down", "status"):
+        if (v or {}).get(k) and not (shutil.which(v[k][0]) or os.path.isfile(v[k][0])):
+            return f"«{v[k][0]}» non trovato (comando che {'accende' if k == 'up' else 'spegne' if k == 'down' else 'controlla'} la VPN)"
+    return None
+
+
+def show_states(states):
+    return "; ".join(f"{k}={', '.join([v] if isinstance(v, str) else v)}" for k, v in (states or {}).items()) or "—"
+
+
+def parse_states(text):
+    """«in corso=In Progress; risolte=Resolved, Closed» → {"in corso": ["In Progress"], "risolte": [...]}."""
+    out = {}
+    for part in filter(None, (p.strip() for p in text.split(";"))):
+        label, eq, names = part.partition("=")
+        if not eq or not label.strip():
+            raise ValueError("scrivi etichetta=Stato Redmine, separate da ; (es. in corso=In Progress; risolte=Resolved)")
+        out[label.strip()] = [n.strip() for n in names.split(",") if n.strip()]
+    return out
+
+
+def states_problem(states):
+    try:
+        redmine.by_state([], states)
+    except ValueError as e:
+        return str(e)
+    return None
+
+
+SETTINGS = [
+    Setting("url", "Indirizzo di Redmine", check=lambda v: v.startswith("https://") or "deve iniziare con https://",
+            parse=lambda t: t.rstrip("/")),
+    Setting("user", "Utente Redmine", note="la chiave API è legata all'utente"),
+    Setting("ruolo", "Ruolo", kind="choice", choices=[("io", "le mie task"), ("pm", "PM: seguo i progetti")],
+            default="io", note="PM: progetti e stato scaricano tutto"),
+    Setting("progetti", "Progetti da scaricare", kind="list", note="identificativi separati da virgola; - = tutti"),
+    Setting("copia_locale", "Copia locale dei dati", kind="yesno", default=False,
+            note="sì: i comandi rispondono subito"),
+    Setting("aggiorna_ogni_minuti", "Minuti fra due download", kind="number", default=10,
+            note="aggiornamenti più ravvicinati usano la copia"),
+    Setting("cartella_download", "Cartella degli allegati", kind="folder",
+            default=os.path.join("~", "Downloads", "pm-kit")),
+    Setting("vpn", "VPN", show=show_vpn, edit=edit_vpn, check=lambda v: vpn_problem(v) or True),
+    Setting("vpn_minuti", "Minuti di VPN aperta nel menu", kind="number", default=5,
+            note="chiusa dopo questi minuti fermi"),
+    Setting("stati", "Stati negli indicatori", show=show_states, parse=parse_states,
+            check=lambda v: states_problem(v) or True, note="etichetta=Stato Redmine; …"),
+]
+
+
+def change_key(screen):
+    cfg = config()
+    if not cfg:
+        return f"prima `{app.cmd('setup')}`"
+    credentials.forget(SERVICE, cfg.get("user", "default"))
+    ok = secret(SERVICE, cfg.get("user", "default"), screen, ASK_KEY, validate=KEY_FORMAT)
+    return "chiave API salvata nel portachiavi" if ok else "chiave API non cambiata"
+
+
+def start_over(screen):
+    """After «Rifai da capo»: the API key goes too, then the setup from the start."""
+    credentials.forget(SERVICE, (app.config(config_path()) or {}).get("user", "default"))
+    return setup(screen, [])
+
+
+@app.command("impostazioni", args="[NOME [VALORE]] [--reset]",
+             help="vedi e cambia le impostazioni (indirizzo, utente, ruolo, VPN, cartelle…); «-» = predefinito",
+             menu="Impostazioni", key="i", json=True, example=["vpn_minuti", "10"])
+def impostazioni(screen, args):
+    if not screen.json:
+        screen.header("impostazioni")
+    return edit_settings(screen, config_path(), SETTINGS, args, actions=[("Cambia la chiave API", change_key)],
+                         on_reset=start_over)
+
+
 def steps(screen):
     path = config_path()
 
@@ -416,16 +514,15 @@ def steps(screen):
         return True, "comandi configurati" if (cfg["vpn"] or {}).get("up") else "non serve"
 
     def ask_vpn():
-        cfg = app.config(path) or {}
-        if screen.confirm("Per arrivare a Redmine serve una VPN?", "No", "Sì"):
-            write_json(path, {**cfg, "vpn": None})
-            return True, "non serve"
-        lines = {k: screen.ask(f"Comando che {what} la VPN:") for k, what in
-                 (("up", "accende"), ("down", "spegne"), ("status", "dice se è accesa (esce con 0 se sì)"))}
-        if not lines["up"] or not lines["down"]:
-            return False, "servono almeno i comandi per accenderla e spegnerla"
-        write_json(path, {**cfg, "vpn": {k: shlex.split(v) for k, v in lines.items() if v}})
-        return True
+        try:
+            v = edit_vpn(screen, None)
+        except ValueError as e:
+            return False, str(e)
+        why = vpn_problem(v)
+        if why:
+            return False, why
+        write_json(path, {**(app.config(path) or {}), "vpn": v})
+        return True, show_vpn(v)
 
     def ask_key():
         cfg = config()
@@ -444,14 +541,14 @@ def steps(screen):
         except ERRORS + (KeyError, TypeError) as e:
             return False, why(e)
     out = [Step("configurazione", lambda: config() is not None, apply=write_config,
-                fix=f"Scrivi {path} con url e user (vedi `{app.prog} help`)", plan=f"scrivo {path}"),
+                fix=f"`{app.cmd('setup')}` chiede indirizzo e utente", plan=f"scrivo {path}"),
            Step("chiave API nel portachiavi", lambda: bool(stored_key(config())), apply=ask_key,
                 fix=f"`{app.cmd('setup')}` la chiede una volta", plan="chiedo la chiave e la salvo nel portachiavi"),
            Step("cartella per gli allegati", lambda: bool(config() and config().get("cartella_download")),
                 apply=lambda: ask_folder(), plan="chiedo dove salvare gli allegati (proposta: ~/Downloads/pm-kit)",
-                fix=f'In {path}: "cartella_download": "percorso"'),
+                fix=f"`{app.cmd('impostazioni')}` → Cartella degli allegati"),
            Step("VPN", vpn_known, apply=ask_vpn, plan=f"chiedo se serve la VPN e la scrivo in {path}",
-                fix=f'In {path}: "vpn": null se non serve, oppure "vpn": {{"up": [...], "down": [...], "status": [...]}}'),
+                fix=f"`{app.cmd('impostazioni')}` → VPN"),
            Step("Redmine risponde", reaches)]
     cfg = config()
     if cfg and "stati" in cfg:
@@ -461,7 +558,7 @@ def steps(screen):
                 return True, " · ".join(cfg["stati"])
             except ValueError as e:
                 return False, str(e)
-        out.append(Step("mappa degli stati", states_ok, fix=f'In {path}: "stati": {{"in corso": ["In Progress"], …}}'))
+        out.append(Step("mappa degli stati", states_ok, fix=f"`{app.cmd('impostazioni')}` → Stati negli indicatori"))
     if cfg and cfg.get("pin_sha256"):
         out.append(pin_step(client(cfg, None)))
 

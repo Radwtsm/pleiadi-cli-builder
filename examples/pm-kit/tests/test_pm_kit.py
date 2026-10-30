@@ -272,6 +272,48 @@ class StateMap(unittest.TestCase):
             redmine.my_indicators(self.data(), TODAY, {"in corso": 3})
 
 
+class Settings(unittest.TestCase):
+    """Everything a person may get wrong at setup is changeable from «Impostazioni», never by editing the JSON."""
+    def test_every_config_key_is_a_setting(self):
+        from pm_kit import __main__ as m
+        listed = {s.key for s in m.SETTINGS}
+        documented = {"url", "user", "copia_locale", "progetti", "vpn_minuti", "ruolo", "aggiorna_ogni_minuti",
+                      "cartella_download", "stati", "vpn"}
+        self.assertEqual(listed, documented)  # ca_file / pin_*: given by IT, stay in the file
+
+    def test_states_text(self):
+        from pm_kit import __main__ as m
+        v = m.parse_states("in corso=In Progress; risolte=Resolved, Closed")
+        self.assertEqual(v, {"in corso": ["In Progress"], "risolte": ["Resolved", "Closed"]})
+        self.assertEqual(m.show_states(v), "in corso=In Progress; risolte=Resolved, Closed")
+        with self.assertRaises(ValueError):
+            m.parse_states("in corso")
+
+    def test_vpn_programs_must_exist(self):
+        from pm_kit import __main__ as m
+        self.assertIsNone(m.vpn_problem({}))
+        self.assertIsNone(m.vpn_problem({"up": [sys.executable, "-c", "0"], "down": [sys.executable]}))
+        self.assertIn("non trovato", m.vpn_problem({"up": ["vpn-che-non-esiste"], "down": ["x"]}))
+        self.assertEqual(m.show_vpn({}), "non serve")
+        self.assertTrue(m.show_vpn(None).startswith("—"))
+
+    @unittest.skipIf(os.name == "nt", "no pty")
+    def test_screen_at_every_size(self):
+        from pleiadi_cli_builder import screentest
+        with tempfile.TemporaryDirectory() as home:
+            os.makedirs(os.path.join(home, ".config", "pm-kit"))
+            with open(os.path.join(home, ".config", "pm-kit", "config.json"), "w") as f:
+                json.dump({"url": "https://redmine.example", "user": "anna", "vpn": {}}, f)
+            env = {"HOME": home, "USERPROFILE": home, "PCB_GLYPHS": "full",
+                   "PYTHONPATH": os.pathsep.join([HERE, os.path.dirname(os.path.dirname(HERE))])}
+            argv = [sys.executable, "-m", "pm_kit"]
+            steps = [screentest.wait("Cosa"), screentest.keys("i"), screentest.wait("Cosa vuoi cambiare")]
+            for c, l in ((80, 24), (120, 40)):
+                s = screentest.run_screen(argv, steps, c, l, env=env)
+                self.assertEqual(s.problems(expect=["Cosa vuoi cambiare?", "Indirizzo di Redmine", "Indietro"]), [],
+                                 s.report())
+
+
 class Commands(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

@@ -10,13 +10,14 @@ from .credentials import CommandSource, ProtectedFile, check_secret, copy_to_cli
 from .install import bundle, install_launcher, self_update
 from .intro import SHAPES, TINTS, Scene, play
 from .proc import PolicyError, run, run_live
+from .settings import KEEP, Setting, edit_settings
 from .steps import Result, Step, run_steps
 from .term import Screen, Theme, clip, key, progress
 from .webapi import HTTPError, ReadOnlyClient, pin_step, server_certificate
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 __all__ = ["App", "Screen", "Theme", "Step", "Result", "run_steps", "run", "run_live", "progress", "Scene", "play",
            "SHAPES", "TINTS", "bundle", "install_launcher", "self_update", "read_json", "write_json", "clip", "key",
            "temporary", "secret", "forget", "ReadOnlyClient", "HTTPError", "pin_step", "PolicyError",
            "CommandSource", "ProtectedFile", "server_certificate",
-           "check_secret", "Detail", "copy_to_clipboard", "Board"]
+           "check_secret", "Detail", "copy_to_clipboard", "Board", "Setting", "edit_settings", "KEEP"]
