@@ -391,7 +391,9 @@ class App:
                 print(f"{t[5]}: {argv[0]}\n\n{self.usage()}", file=sys.stderr)
                 return 2
             return self.call(c, screen, argv[1:])
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as e:
+            if isinstance(e, proc.Interrupted):  # a program was stopped half-way: say what, as the ✗ line
+                screen.done(e.describe(screen.t), ok=False)
             return 130
         except proc.PolicyError as e:  # the rules stopped it: a clear line, not a traceback
             screen.out(screen.c(screen.theme.error, screen.theme.no) + f" {e}")

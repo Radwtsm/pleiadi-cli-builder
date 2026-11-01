@@ -30,7 +30,12 @@ TEXTS = {
            "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra",
            # compact mode (Screen.compact): the same keys in fewer words
            "hint_short": "↑↓ Invio scegli · ^C esci", "hint_back_short": "↑↓ Invio scegli · Esc torna · ^C esci",
-           "hint_type_short": "Invio conferma · ^C esci", "hint_read_short": "↑↓ scorri · / cerca · q chiudi"},
+           "hint_type_short": "Invio conferma · ^C esci", "hint_read_short": "↑↓ scorri · / cerca · q chiudi",
+           "interrupted": "interrotto: `{cmd}` fermato dopo {time} con tutto ciò che aveva avviato",
+           "half_done": "può essere rimasto a metà ciò che faceva, l'ultima riga: «{last}»",
+           "half_done_quiet": "può essere rimasto a metà ciò che faceva (non aveva scritto niente)",
+           "hint_live": "↑↓ PgSu PgGiù scorri · Fine segui · Ctrl+C ferma", "new_below": "↓ {n} righe nuove",
+           "new_below_1": "↓ 1 riga nuova", "below": "↓ {n} righe sotto", "below_1": "↓ 1 riga sotto"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_back": "↑↓ choose · Enter confirm · Esc back · Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
@@ -52,7 +57,12 @@ TEXTS = {
            "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}",
            "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above",
            "hint_short": "↑↓ Enter choose · ^C quit", "hint_back_short": "↑↓ Enter choose · Esc back · ^C quit",
-           "hint_type_short": "Enter confirm · ^C quit", "hint_read_short": "↑↓ scroll · / search · q close"},
+           "hint_type_short": "Enter confirm · ^C quit", "hint_read_short": "↑↓ scroll · / search · q close",
+           "interrupted": "interrupted: `{cmd}` stopped after {time} with everything it had started",
+           "half_done": "what it was doing may be left half-done, its last line: «{last}»",
+           "half_done_quiet": "what it was doing may be left half-done (it had printed nothing)",
+           "hint_live": "↑↓ PgUp PgDn scroll · End follow · Ctrl+C stop", "new_below": "↓ {n} new lines",
+           "new_below_1": "↓ 1 new line", "below": "↓ {n} lines below", "below_1": "↓ 1 line below"},
 }
 
 # the default logo of the box on top; only blocks every console font has (the classic Windows console too)
@@ -63,6 +73,7 @@ LOGO = (" ▄█▄ ", "▀███▀", " ▀█▀ ")
 # One threshold for all of it (the logo used to go below 60×20); a window that grows again gets the normal view back.
 COMPACT = (70, 22)
 
+MOUSE_ON, MOUSE_OFF = "\033[?1000h\033[?1006h", "\033[?1000l\033[?1006l"  # wheel reports (SGR form)
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
 
 
@@ -214,6 +225,12 @@ def key():
                 if not select.select([fd], [], [], 0.05)[0]:
                     return "esc"  # Esc alone
                 b += os.read(fd, 2)
+                if b == b"\x1b[<":  # a mouse event, SGR form: \x1b[<64;x;yM
+                    while not b[-1:] in (b"M", b"m") and len(b) < 24:
+                        b += os.read(fd, 1)
+                    return mouse_key(b)
+                if b == b"\x1b[M":  # a mouse event, old form: 3 bytes
+                    return mouse_key(b + os.read(fd, 3))
                 if b[2:3].isdigit():  # \x1b[5~ PgUp, \x1b[6~ PgDn, \x1b[1~ Home, \x1b[4~ End
                     while not b.endswith(b"~") and len(b) < 8:
                         b += os.read(fd, 1)
@@ -233,19 +250,164 @@ def key():
     return "enter" if k in ("\r", "\n") else k
 
 
-# Colors by meaning for the output of programs: the first rule that matches gives the line its Theme role. The rules
-# look at the line without its file names, so "errorHandler.cpp" or "error.log" don't make a line an error.
+def mouse_key(b):
+    """A mouse event read by key() → "wheelup", "wheeldown" or "" (clicks are ignored)."""
+    if b.startswith(b"\x1b[<"):
+        button = b[3:].split(b";")[0]
+        button = int(button) if button.isdigit() else -1
+    elif b.startswith(b"\x1b[M") and len(b) >= 4:
+        button = b[3] - 32
+    else:
+        return ""
+    return {64: "wheelup", 65: "wheeldown"}.get(button & ~0x1c if button >= 0 else -1, "")  # without Shift/Alt/Ctrl
+
+
+def key_ready(timeout):
+    """A key if one is typed within `timeout` seconds, else None — for loops that do something else meanwhile
+    (run_live reads the scroll keys while the program runs). Ctrl+C raises as usual."""
+    if WIN:
+        import msvcrt
+        end = time.time() + timeout
+        while not msvcrt.kbhit():
+            if time.time() >= end:
+                return None
+            time.sleep(0.01)
+        return key()
+    import select
+    try:
+        if not select.select([sys.stdin.fileno()], [], [], timeout)[0]:
+            return None
+    except (OSError, ValueError):
+        return None
+    return key()
+
+
+class LiveView:
+    """The lines of a running program as a view that scrolls (no terminal needed: the Screen draws it). At the bottom
+    it follows the program and shows the last `keep`; a key up opens it (taller: Screen gives the height) and it stops
+    there while new lines arrive (counted in `new`); down to the bottom or End go back to following. At most `limit`
+    lines are kept."""
+    UP = {"up": 1, "down": -1, "wheelup": 3, "wheeldown": -3}
+
+    def __init__(self, keep=10, limit=500, rules=None):
+        self.keep, self.limit, self.rules = keep, max(limit, keep), rules
+        self.lines, self.offset, self.new, self.open = [], 0, 0, False  # offset = lines under the view
+
+    def add(self, line):
+        self.lines.append(line)
+        if self.offset:
+            self.offset += 1  # the view stays on the same lines
+            self.new += 1
+        del self.lines[:-self.limit]
+
+    def key(self, k, height):
+        """Moves the view (height = its rows while open); False for a key that isn't a scroll key."""
+        page = max(1, height - 1)
+        if k == "end":
+            self.offset = 0
+        elif k == "home":
+            self.offset = len(self.lines)
+        elif k in self.UP or k in ("pgup", "pgdn"):
+            self.offset += self.UP.get(k) or (page if k == "pgup" else -page)
+        else:
+            return False
+        self.open = not (self.offset <= 0 and (k in ("end", "pgdn") or self.UP.get(k, 1) < 0))
+        self.clamp(height)
+        return True
+
+    def clamp(self, height):
+        self.offset = max(0, min(self.offset, len(self.lines) - height))
+        self.new = min(self.new, self.offset)
+
+    def window(self, height=None):
+        """The lines in view: the last `keep` when following, `height` rows when open."""
+        height = height if self.open and height else self.keep
+        self.clamp(height)
+        end = len(self.lines) - self.offset
+        return self.lines[max(0, end - height):end]
+
+
+# Colors by meaning for the output of programs: (regex, Theme role) rules, the first one wins. role_of() gives a whole
+# line the role of the first rule that matches it; Screen.highlight() colors only what each rule catches. File names
+# come before words: a match that cuts a file name doesn't count, so "errorHandler.cpp" or "error.log" are not errors
+# (a rule may still catch a whole file name). A regex may be a string or compiled.
 RULES = [(re.compile(r"(?i)\b(error|errore|errors|failed|failure|fatal|exception|traceback|denied|panic|conflict)\b"), "error"),
          (re.compile(r"(?i)\b(warn|warning|warnings|attenzione|avviso|deprecated|skipped)\b"), "warn"),
          (re.compile(r"(?i)\b(ok|done|success|successful|passed|completed|completato|fatto|riuscito)\b"), "ok")]
 FILE_NAME = re.compile(r"[\w.~/\\-]*\w\.[A-Za-z][A-Za-z0-9]{0,5}\b")
 
 
+def _rules(rules):
+    return [(re.compile(rx) if isinstance(rx, str) else rx, role) for rx, role in rules]
+
+
+# ready-made rules for the output of some common programs (screen.highlight(text, GIT_RULES), run_live(rules=…))
+SVN_RULES = _rules([
+    (r"^svn: E\d+:.*", "error"),
+    (r"^svn: warning: W\d+:.*", "warn"),
+    (r"^(?:Conflict discovered in|Tree conflict on|Summary of conflicts:|\s+(?:Text|Property|Tree) conflicts: \d+).*",
+     "error"),
+    (r"^ {0,6}C(?= )", "error"),  # the conflict letter: content (1st column), properties (2nd), tree (7th)
+    (r"^[!~](?= )", "warn"),  # missing, obstructed
+    (r"^D(?= )", "warn"),
+    (r"^A(?= )", "ok"),
+    (r"^\?(?= )", "dim"),
+    (r"^(?:Updated to|At|Committed|Checked out) revision \d+\.", "ok")])
+GIT_RULES = _rules([
+    (r"^(?:fatal|error):.*", "error"),
+    (r"^CONFLICT \(.*", "error"),
+    (r"^Automatic merge failed.*", "error"),
+    (r"^ ! \[(?:remote )?rejected\].*", "error"),
+    (r"^\s+both (?:modified|added|deleted):.*", "error"),
+    (r"^(?:UU|AA|DD|AU|UA|UD|DU)(?= )", "error"),
+    (r"^warning:", "warn"),
+    (r"^hint:.*", "dim"),
+    (r"^(?:Already up to date\.|Fast-forward|Switched to (?:a new )?branch .*|Successfully rebased.*)$", "ok")])
+MSBUILD_RULES = _rules([
+    (r"\b(?:fatal )?(?:error|errore) [A-Z]{1,4}\d{3,5}\b", "error"),
+    (r"\b(?:warning|avviso) [A-Z]{1,4}\d{3,5}\b", "warn"),
+    (r"^(?:Build FAILED\.|Compilazione NON riuscita\.)", "error"),
+    (r"(?<!\S)[1-9]\d* (?:Error\(s\)|errori)$", "error"),
+    (r"(?<!\S)[1-9]\d* (?:Warning\(s\)|avvisi)$", "warn"),
+    (r"^(?:Build succeeded\.|Compilazione completata\.)", "ok"),
+    (r"\[[^\[\]]+\.\w*proj\]$", "dim"),  # the project at the end of each line
+    (r"^\s*(?:Time Elapsed|Tempo trascorso) .*", "dim")])
+
+
+def _found(text, rx, names):
+    """The matches of rx in text that don't cut a file name (names = their spans)."""
+    pos = 0
+    while pos <= len(text):
+        m = rx.search(text, pos)
+        if not m:
+            return
+        a, b = m.span()
+        pos = b if b > a else b + 1
+        if a == b:
+            continue
+        if any(a < e and b > s and not (a <= s and b >= e) for s, e in names):
+            pos = a + 1  # inside a file name: look further on
+            continue
+        yield a, b
+
+
+def spans(line, rules=None):
+    """[(start, end, role)] of a line (without color codes): what each rule catches; where two overlap, the first
+    rule wins."""
+    names = [m.span() for m in FILE_NAME.finditer(line)]
+    taken = []
+    for rx, role in _rules(RULES if rules is None else rules):
+        taken += [(a, b, role) for a, b in _found(line, rx, names)
+                  if not any(a < e and b > s for s, e, _ in taken)]
+    return sorted(taken)
+
+
 def role_of(line, rules=None):
-    """The Theme role of a line of output ("error", "warn", "ok", …) or None."""
-    text = FILE_NAME.sub(" ", ANSI.sub("", line))
-    for rx, role in (RULES if rules is None else rules):
-        if rx.search(text):
+    """The Theme role of a line of output ("error", "warn", "ok", …) or None: the first rule that matches it."""
+    text = ANSI.sub("", line)
+    names = [m.span() for m in FILE_NAME.finditer(text)]
+    for rx, role in _rules(RULES if rules is None else rules):
+        if next(_found(text, rx, names), None):
             return role
     return None
 
@@ -301,7 +463,7 @@ class Screen:
         plain_env = plain_env or re.sub(r"\W", "_", name).upper() + "_PLAIN"
         self.results, self.no_input, self.dry, self.read_only, self.json = [], False, False, False, False
         self.timings = {}  # phase → seconds in this command (run_steps, steps.phase)
-        self.rules, self.live_n = RULES, 0
+        self.rules, self.live_n, self.view, self.scrolling = RULES, 0, None, False  # see live()
         self.outcome = False  # the command has said how it ended (done(), summary()): App.call adds one otherwise  # colors by meaning of output(); live lines now at the end of the body
         self.focus, self.over, self.stay = None, False, False  # see visible(), out() and App.menu
         self.logo, self.about, self.rows, self.subtitle = LOGO, None, [], ""  # the box on top: header(), banner()
@@ -354,7 +516,7 @@ class Screen:
         cbreak(False)
         if self in SCREENS:
             SCREENS.remove(self)
-        sys.stdout.write("\033[?25h\033[?1049l")
+        sys.stdout.write(MOUSE_OFF + "\033[?25h\033[?1049l")
         keep = [r for r in (self.last or "\n".join(self.body).strip("\n").split("\n")) if r]
         sys.stdout.write("\n".join(keep) + ("\n" if keep else ""))
         sys.stdout.flush()
@@ -366,7 +528,7 @@ class Screen:
             if CBREAK["depth"] and CBREAK["saved"]:  # the other program gets a normal terminal
                 import termios
                 termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, CBREAK["saved"])
-            sys.stdout.write("\033[?25h\033[?1049l")
+            sys.stdout.write(MOUSE_OFF + "\033[?25h\033[?1049l")
             sys.stdout.flush()
 
     def resume(self):
@@ -375,7 +537,7 @@ class Screen:
             import tty
             tty.setcbreak(sys.stdin.fileno())
         if self.opened:
-            sys.stdout.write("\033[?1049h\033[?25l")
+            sys.stdout.write("\033[?1049h\033[?25l" + (MOUSE_ON if self.scrolling and self.mouse() else ""))
             self.size = None
             self.draw()
 
@@ -391,7 +553,7 @@ class Screen:
                 self.body, self.over = [], False
             self.body += line.split("\n")
             del self.body[:-500]
-            self.live_n = 0
+            self.live_n, self.view = 0, None
         self.draw()
 
     def paint(self, line):
@@ -399,26 +561,95 @@ class Screen:
         role = role_of(line, self.rules)
         return self.c(getattr(self.theme, role), line) if role else line
 
-    def output(self, text):
-        """What a program printed, line by line, each colored by its meaning (files and logs stay plain)."""
-        for r in str(text).split("\n"):
-            self.out("    " + self.paint(r) if r.strip() else "")
+    def highlight(self, text, rules=None):
+        """The text with only what each rule catches colored (rules = [(regex, Theme role)], the first wins; default
+        self.rules); file names come before words. Without colors (a pipe, a log) the text as it is."""
+        out = []
+        for line in ANSI.sub("", str(text)).split("\n"):
+            if not self.colors:
+                out.append(line)
+                continue
+            parts, pos = [], 0
+            for a, b, role in spans(line, self.rules if rules is None else rules):
+                code = getattr(self.theme, role, None)
+                parts += [line[pos:a], self.c(code, line[a:b]) if code else line[a:b]]
+                pos = b
+            out.append("".join(parts) + line[pos:])
+        return "\n".join(out)
 
-    def live(self, line, keep=10):
+    def output(self, text, rules=None):
+        """What a program printed, line by line, each colored by its meaning (files and logs stay plain); with
+        rules, only what they catch (highlight())."""
+        for r in str(text).split("\n"):
+            self.out("    " + (self.paint(r) if rules is None else self.highlight(r, rules)) if r.strip() else "")
+
+    def live(self, line, keep=10, rules=None, limit=500, draw=True):
         """A line of a program while it runs: in full screen it scrolls under the current step, colored by its
-        meaning, and only the last `keep` stay; returns False (nothing shown) elsewhere, where the output comes
-        back to the caller at the end."""
+        meaning (with rules: only what they catch), and only the last `keep` stay in view; up to `limit` are kept to
+        scroll back to (live_scroll). Returns False (nothing shown) elsewhere, where the output comes back to the
+        caller at the end. draw=False: the caller draws once for many lines."""
         if not self.full or keep <= 0:
             return False
         self.open()
         with self.lock:
-            while self.live_n >= keep:
-                del self.body[-self.live_n]
-                self.live_n -= 1
-            self.body.append(self.dim("  " + self.theme.attach + " ") + self.paint(line))
-            self.live_n += 1
+            if self.view is None:
+                self.view = LiveView(keep, limit, rules)
+            self.view.add(line)
+            self._live_render()
+        if draw:
+            self.draw()
+        return True
+
+    def live_scroll(self, on):
+        """While a program runs (run_live): its lines scroll with ↑↓ PgUp PgDn Home End and the wheel, the keys
+        written under them. Wheel: the terminal reports it (mouse mode) on Mac and Linux; PCB_MOUSE=0 leaves the
+        mouse to the terminal (selecting text). Off: back to following, the keys line goes away."""
+        if not self.opened:
+            return
+        self.scrolling = on
+        if self.mouse() and not self.suspended:
+            sys.stdout.write(MOUSE_ON if on else MOUSE_OFF)
+        with self.lock:
+            if self.view:
+                if not on:
+                    self.view.offset, self.view.new, self.view.open = 0, 0, False
+                self._live_render()
+        self.draw()
+
+    @staticmethod
+    def mouse():
+        """The wheel is asked to the terminal (mouse reports): Mac and Linux, unless PCB_MOUSE=0."""
+        return not WIN and os.environ.get("PCB_MOUSE", "1") != "0"
+
+    def live_key(self, k):
+        """A key while a program runs: True when it moved its lines."""
+        with self.lock:
+            if not self.view or not self.view.key(k, self._live_room()):
+                return False
+            self._live_render()
         self.draw()
         return True
+
+    def _live_room(self):
+        """Rows for the lines of the program while you read back: the window under the box, minus the separator,
+        the keys line, its own status line and the step line above."""
+        w, h = shutil.get_terminal_size((80, 24))
+        head = self.banner(w, h)
+        return max(self.view.keep if self.view else 1, h - (len(head) if h >= len(head) + 8 else 0) - 4)
+
+    def _live_render(self):
+        v = self.view
+        lines = [self.dim("  " + self.theme.attach + " ") + (self.paint(r) if v.rules is None else self.highlight(r, v.rules))
+                 for r in v.window(self._live_room())]
+        if self.scrolling:
+            hint = self.keys(pairs(self.t["hint_live"]))
+            if v.offset:
+                which = ("new_below" if v.new else "below") + ("_1" if (v.new or v.offset) == 1 else "")
+                hint = self.acc(self.t[which].format(n=v.new or v.offset)) + self.dim(" · ") + hint
+            lines.append("    " + hint)
+        start = len(self.body) - self.live_n
+        self.body[start:] = lines
+        self.live_n = len(lines)
 
     def draw(self):
         if not self.opened or self.suspended:
@@ -493,7 +724,7 @@ class Screen:
     def clear(self):
         if self.full:
             with self.lock:
-                self.body = []
+                self.body, self.live_n, self.view = [], 0, None
             self.draw()
         elif self.colors:
             sys.stdout.write("\033[2J\033[3J\033[H")
