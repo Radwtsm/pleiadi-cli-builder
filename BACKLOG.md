@@ -5,7 +5,6 @@ vanno qui, non nel codice subito. Solo cose generiche: le funzioni di uno strume
 
 | # | Cosa | Impegno | Prova |
 |---|---|---|---|
-| 2 | **Programmi finti per i test**: un helper che mette in testa al PATH script che rispondono sempre uguale (es. un controllo versione, una build, un client SQL), con uscita 0 o errore a scelta; così i flussi pensati per Windows si provano anche su Mac/Linux | poco, ~40 | test dell'helper stesso |
 | 3 | **Tempo di ogni comando** in un file locale (comando, durata, esito; niente argomenti né dati): base per misurare prima/dopo, `App.timings()` per leggerlo | poco, ~30 | orologio finto |
 | 4 | **Modalità compatta** sotto 70 colonne o 22 righe, anche ridimensionando dal vivo: titolo su una riga, nel menu principale le notifiche in cima e i pulsanti base con la lettera (`[m] Mie`, `[…] Altro`), etichette brevi (`short=` su `app.command`), riga dei tasti corta; tornando grande, la vista normale | medio, ~150 | `screentest`: grande → 60×20 → 40×15 → grande, la domanda e i pulsanti sempre visibili |
 | 5 | **`run_live(..., on_line=)`** e **Ctrl+C pulito su Windows**: una callback per ogni riga; l'interruzione ferma tutto l'albero del processo (gruppo di processi / `CTRL_BREAK`) e dice cosa è rimasto a metà (da skf-cli) | medio, ~80 | programma finto che stampa e resta appeso, su Windows e Mac |
