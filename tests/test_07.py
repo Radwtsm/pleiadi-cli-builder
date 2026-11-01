@@ -125,7 +125,7 @@ class FullScreen(unittest.TestCase):
             elif keys:
                 os.write(fd, keys.pop(0))
         _, status = os.waitpid(pid, 0)
-        self.assertEqual(os.waitstatus_to_exitcode(status), 0, data[-400:])
+        self.assertEqual((os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status >> 8), 0, data[-400:])
         self.assertIn(b"USCITO", data)
         self.assertIn(b"nota 2", data)  # the search opened the folded section
         import re

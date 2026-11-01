@@ -34,7 +34,7 @@ def pty_run(script, keys, wait_for=None):
             os.write(fd, keys.pop(0))
             wait_for.pop(0)
     _, status = os.waitpid(pid, 0)
-    return os.waitstatus_to_exitcode(status), data
+    return (os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status >> 8), data
 
 
 @unittest.skipIf(os.name == "nt", "no pty")
