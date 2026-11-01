@@ -9,7 +9,7 @@ from .detail import Detail
 from .credentials import CommandSource, ProtectedFile, check_secret, copy_to_clipboard, forget, secret
 from .install import bundle, install_launcher, self_update
 from .intro import SHAPES, TINTS, Scene, play
-from .proc import PolicyError, run, run_live
+from .proc import Interrupted, PolicyError, run, run_live
 from .settings import KEEP, Setting, edit_settings
 from .steps import Result, Step, phase, run_steps
 from .term import RULES, Screen, Theme, clip, key, progress, role_of
@@ -20,4 +20,5 @@ __all__ = ["App", "Screen", "Theme", "Step", "Result", "run_steps", "run", "run_
            "SHAPES", "TINTS", "bundle", "install_launcher", "self_update", "read_json", "write_json", "clip", "key",
            "temporary", "secret", "forget", "ReadOnlyClient", "HTTPError", "pin_step", "PolicyError",
            "CommandSource", "ProtectedFile", "server_certificate",
-           "check_secret", "Detail", "copy_to_clipboard", "Board", "Setting", "edit_settings", "KEEP", "phase", "role_of", "RULES"]
+           "check_secret", "Detail", "copy_to_clipboard", "Board", "Setting", "edit_settings", "KEEP", "phase", "role_of", "RULES",
+           "Interrupted"]

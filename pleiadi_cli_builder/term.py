@@ -27,7 +27,10 @@ TEXTS = {
            "bad_number": "serve un numero (0 o più)",
            "unknown_setting": "Impostazione «{key}» sconosciuta. Ci sono: {keys}",
            "settings_cli": "cambiarle: nel menu, oppure `impostazioni NOME VALORE` («-» = predefinito) · file: {path}",
-           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra"},
+           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra",
+           "interrupted": "interrotto: `{cmd}` fermato dopo {time} con tutto ciò che aveva avviato",
+           "half_done": "può essere rimasto a metà ciò che faceva, l'ultima riga: «{last}»",
+           "half_done_quiet": "può essere rimasto a metà ciò che faceva (non aveva scritto niente)"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_back": "↑↓ choose · Enter confirm · Esc back · Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
@@ -47,7 +50,10 @@ TEXTS = {
            "bad_number": "a number is needed (0 or more)",
            "unknown_setting": "Unknown setting «{key}». There are: {keys}",
            "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}",
-           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above"},
+           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above",
+           "interrupted": "interrupted: `{cmd}` stopped after {time} with everything it had started",
+           "half_done": "what it was doing may be left half-done, its last line: «{last}»",
+           "half_done_quiet": "what it was doing may be left half-done (it had printed nothing)"},
 }
 
 # the default logo of the box on top; only blocks every console font has (the classic Windows console too)
