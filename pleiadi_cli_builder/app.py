@@ -53,6 +53,37 @@ def write_json(path, data):
     os.replace(path + ".tmp", path)  # never a half-written file
 
 
+class _Timings:
+    """App.timings: true when App(timings=True); called, the recorded runs (see App.timings())."""
+    def __init__(self, app):
+        self.app = app
+
+    def __bool__(self):
+        return self.app._timings_on
+
+    def __repr__(self):
+        return repr(self.app._timings_on)
+
+    def __call__(self, command=None):
+        """[{"command", "seconds", "outcome", "code", "at"}], oldest first (command= only that one's)."""
+        out = []
+        try:
+            with open(self.app.timings_path(), encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue  # a line cut by a crash: the others still count
+                    if isinstance(row, dict) and command in (None, row.get("command")):
+                        out.append(row)
+        except OSError:
+            pass
+        return out
+
+
+TIMINGS_KEEP = 1000  # runs kept in timings.jsonl (the oldest go)
+
+
 class Command:
     def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None):
         self.name, self.fn, self.help, self.menu, self.args, self.effects = name, fn, help, menu, args, effects
@@ -78,8 +109,10 @@ class App:
         banner = the logo in the box on top, a few rows of blocks (colored with the accent unless they already have
         their colors; None: the library's; (): none); banner_info() → more lines beside it: version, folder, context.
         timings = after a command with timed phases (run_steps, steps.phase) a table of every phase now, in the last
-        run of the same command and the change; the times are kept in the state."""
-        self.timings = timings
+        run of the same command and the change; the times are kept in the state. Also every command's duration
+        and outcome (command, seconds, ok/error/interrupted/refused, exit code, when; never arguments or data) go
+        into timings.jsonl beside the state: app.timings() reads them back."""
+        self.timings, self.clock = timings, time.monotonic  # clock: replaceable in tests
         self.banner, self.banner_info = banner, banner_info
         self.session_idle_minutes, self._memory = session_idle_minutes, {}
         self.sections, self.prog, self.renamed = {}, name, {}  # prog/renamed: how the host calls this App
@@ -93,6 +126,35 @@ class App:
         base = (os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")) if WIN else \
             os.path.join(home, "Library", "Caches") if MAC else os.environ.get("XDG_CACHE_HOME") or os.path.join(home, ".cache")
         self.cache_dir = os.path.join(base, name, "snapshots")
+
+    @property
+    def timings(self):
+        """Truthy when App(timings=True); app.timings(command=None) = the recorded runs, oldest first."""
+        return _Timings(self)
+
+    @timings.setter
+    def timings(self, on):
+        self._timings_on = bool(on)
+
+    def timings_path(self):
+        return os.path.join(os.path.dirname(self.state_path), "timings.jsonl")
+
+    def _record_timing(self, command, seconds, outcome, code):
+        path = self.timings_path()
+        row = {"command": command, "seconds": round(seconds, 2), "outcome": outcome, "code": code,
+               "at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            if os.path.getsize(path) > TIMINGS_KEEP * 200:  # trimmed now and then, not at every run
+                with open(path, encoding="utf-8") as f:
+                    keep = f.readlines()[-TIMINGS_KEEP:]
+                with open(path + ".tmp", "w", encoding="utf-8", newline="\n") as f:
+                    f.writelines(keep)
+                os.replace(path + ".tmp", path)
+        except (OSError, TypeError, ValueError):
+            pass  # a measurement never breaks the command
 
     # ── state ──
     def state(self):
@@ -338,11 +400,17 @@ class App:
         proc.POLICY.update(write_commands=self.write_commands, read_only=screen.read_only, dry=screen.dry)
         screen.timings, screen.outcome = {}, False
         section = c.fn.__defaults__ and isinstance(c.fn.__defaults__[-1], App)  # a section's menu, not an action
+        started, outcome, code = self.clock(), "error", 1
         try:
             drop = (DRY_FLAGS if c.dry else ()) + REFRESH_FLAGS + (JSON_FLAG,)
             try:
                 code = c.fn(screen, [a for a in args if a not in drop]) or 0
-            except (KeyboardInterrupt, proc.PolicyError):
+                outcome = "ok" if code == 0 else "error"
+            except KeyboardInterrupt:
+                outcome, code = "interrupted", 130
+                raise
+            except proc.PolicyError:
+                outcome, code = "refused", 3
                 raise
             except Exception as e:  # a clear ✗ line, never a traceback (PCB_DEBUG=1: the traceback)
                 if os.environ.get("PCB_DEBUG"):
@@ -363,6 +431,8 @@ class App:
                 self.save_state(timings=every)
             return code
         finally:
+            if self.timings and not section and not screen.dry:
+                self._record_timing(c.name, self.clock() - started, outcome, code)
             screen.read_only = screen.dry = screen.json = screen.refresh = False
             proc.POLICY.update(read_only=False, dry=False)
 
