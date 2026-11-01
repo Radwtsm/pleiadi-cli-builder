@@ -148,6 +148,37 @@ def aperte(screen, args):
 
 Un esempio completo: [`examples/pm-kit`](examples/pm-kit) — i progetti in lavorazione su Redmine, per i PM.
 
+### pm-kit su un altro computer
+
+Anche pm-kit è un file solo nella release, con la libreria dentro (`tools/release.py` lo fa accanto al builder):
+si scarica, si controlla l'impronta e `installa` mette il comando `pm-kit` in `~/.local/bin` (sul PATH). Poi
+`pm-kit setup`; `pm-kit nuova-versione` scarica l'ultima e la sostituisce solo se lo sha256 corrisponde.
+
+Mac o Linux, nel Terminale:
+
+```bash
+curl -fLO https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pm-kit.pyz
+```
+
+```bash
+curl -fsL https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pm-kit.pyz.sha256 | shasum -a 256 -c
+```
+
+```bash
+python3 pm-kit.pyz installa
+```
+
+Windows, in PowerShell:
+
+```powershell
+$u = "https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pm-kit.pyz"
+Invoke-WebRequest $u -OutFile pm-kit.pyz
+(Get-FileHash pm-kit.pyz -Algorithm SHA256).Hash.ToLower() -eq (Invoke-WebRequest "$u.sha256").Content.Split(" ")[0]
+py pm-kit.pyz installa
+```
+
+L'ultima riga prima di `py` deve dire `True`. In un terminale nuovo: `pm-kit setup`, poi `pm-kit` apre il menu.
+
 ## Regole del design
 
 - Le funzioni non stampano: restituiscono valori e `Result`; stampa solo lo `Screen`. Così la stessa logica

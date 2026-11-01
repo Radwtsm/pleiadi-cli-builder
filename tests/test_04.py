@@ -1,6 +1,7 @@
 """0.4: the general rules as code — each test failed before its fix."""
 import datetime, io, json, os, subprocess, sys, tempfile, unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["PCB_GLYPHS"] = "full"  # the tests compare symbols: the same set in every terminal
@@ -155,6 +156,10 @@ class SecretScan(unittest.TestCase):
     def test_finds_staged_token(self):
         from pleiadi_cli_builder import scan
         d = tempfile.mkdtemp()
+        # in the pre-commit hook GIT_DIR/GIT_INDEX_FILE point at the outer repo: b.py ended up in a real commit
+        clean = mock.patch.dict(os.environ, {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}, clear=True)
+        clean.start()
+        self.addCleanup(clean.stop)
         g = lambda *a: subprocess.run(["git", *a], cwd=d, capture_output=True, text=True, encoding="utf-8")
         g("init", "-q")
         with open(os.path.join(d, "a.py"), "w") as f:

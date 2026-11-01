@@ -1,4 +1,5 @@
-"""Builds dist/pleiadi-cli-builder.pyz (+ .sha256) for a GitHub release: the builder itself in one file.
+"""Builds the files of a GitHub release, each with its .sha256: dist/pleiadi-cli-builder.pyz (the builder itself in
+one file) and dist/pm-kit.pyz (the pm-kit example with the library inside).
 
 Refuses when pyproject.toml carries its own version instead of reading __version__ (it drifted to 0.10.0 once)."""
 import os, re, sys, tempfile
@@ -28,10 +29,13 @@ def main():
     if problem:
         print("✗ " + problem)
         return 1
-    out = os.path.join(ROOT, "dist", "pleiadi-cli-builder.pyz")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    dist = os.path.join(ROOT, "dist")
+    os.makedirs(dist, exist_ok=True)
     with tempfile.TemporaryDirectory() as empty:
-        print(__version__, bundle(empty, "pleiadi_cli_builder.__main__:main", out))
+        print(__version__, "pleiadi-cli-builder.pyz",
+              bundle(empty, "pleiadi_cli_builder.__main__:main", os.path.join(dist, "pleiadi-cli-builder.pyz")))
+    print(__version__, "pm-kit.pyz",
+          bundle(os.path.join(ROOT, "examples", "pm-kit"), "pm_kit.__main__:main", os.path.join(dist, "pm-kit.pyz")))
     return 0
 
 
