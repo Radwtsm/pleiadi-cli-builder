@@ -3,7 +3,7 @@ usage generated from the commands; state kept per computer in ~/.config/<name>/s
 import json, os, re, sys, textwrap, time
 
 from . import access, proc
-from .term import MAC, WIN, Screen, Theme, stdin_tty
+from .term import MAC, WIN, Label, Screen, Theme, stdin_tty
 
 HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci", "Invio per tornare al menu",
                "comando sconosciuto", "solo lettura", "--prova", "istantanea del {when} · --aggiorna per riscaricarla"),
@@ -54,9 +54,10 @@ def write_json(path, data):
 
 
 class Command:
-    def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None):
+    def __init__(self, name, fn, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None,
+                 short=None):
         self.name, self.fn, self.help, self.menu, self.args, self.effects = name, fn, help, menu, args, effects
-        self.key = key
+        self.key, self.short = key, short
         self.json, self.example, self.dry = json, list(example), dry and effects
 
 
@@ -200,16 +201,18 @@ class App:
             return None
         return self.commands.get(back.get(typed, typed))
 
-    def command(self, name, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None):
+    def command(self, name, help="", menu=None, args="", effects=True, json=False, example=(), dry=True, key=None,
+                short=None):
         """menu = the text in the interactive menu (None = not in the menu); args = usage shown in help.
         effects=False declares a read-only command: its steps can only check (enforced in run_steps). A command
         with effects gets --prova/--dry-run: screen.dry is True and run_steps only says what it would do.
         json=True: the command prints its data with screen.table and supports --json; example = sample arguments
         for the contract tests (pleiadi_cli_builder.contract). dry=False: no --prova here (the command forwards to a
         program with its own dry run): the flag is passed through untouched. key = its letter in the menu (a
-        shortcut: picks it at once); without one it gets the first free letter of its menu text."""
+        shortcut: picks it at once); without one it gets the first free letter of its menu text. short = its label in
+        the compact menu (a narrow or low window, term.COMPACT), one or two words: «Mie» for «Le mie task»."""
         def add(fn):
-            self.commands[name] = Command(name, fn, help, menu, args, effects, json, example, dry, key)
+            self.commands[name] = Command(name, fn, help, menu, args, effects, json, example, dry, key, short)
             return fn
         return add
 
@@ -252,6 +255,11 @@ class App:
             items.append(Command(name, lambda s, a, sub=sub: sub.menu(s), menu=f"{sub.section_title} ›", effects=False))
         return items
 
+    def menu_short(self, items=None):
+        """The labels of the compact menu, «Quit» included: short= of each command, otherwise its menu text."""
+        items = self._menu_items() if items is None else items
+        return [c.short or c.menu for c in items] + [HELP.get(self.lang, HELP["en"])[3]]
+
     def menu_keys(self, items=None):
         """One letter per menu item, then «q» for Quit: the chosen ones (key=) first, the others the first free
         letter of their text. j k q are the menu's own (and digits pick by number)."""
@@ -275,7 +283,8 @@ class App:
             while True:  # back to the menu after each item, until «Quit»: on the item you came from
                 if len(self.crumbs) > 1:
                     screen.out("  " + screen.dim(f" {screen.theme.crumb} ".join(self.crumbs)))
-                i = screen.choose(t[2], [c.menu for c in items] + [t[3]], keys=letters, start=i, esc=len(items))
+                options = [Label(o, sh) for o, sh in zip([c.menu for c in items] + [t[3]], self.menu_short(items))]
+                i = screen.choose(t[2], options, keys=letters, start=i, esc=len(items))
                 if i == len(items):
                     return code
                 screen.fresh(self.crumbs + [items[i].menu.rstrip(" ›")])
