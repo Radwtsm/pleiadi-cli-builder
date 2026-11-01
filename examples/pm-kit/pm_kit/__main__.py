@@ -163,7 +163,7 @@ def failed(screen, reason, empty):
     return 1
 
 
-@app.command("mie", help="le task aperte assegnate a te (scarica solo quelle)", menu="Le mie task", effects=False,
+@app.command("mie", help="le task aperte assegnate a te (scarica solo quelle)", menu="Le mie task", short="Mie", effects=False,
              json=True, key="m")
 def mie(screen, args):
     data, when = mine(screen)
@@ -203,7 +203,7 @@ def show_indicators(screen, ind):
 
 
 @app.command("novita", args="[--visto]", help="cosa è cambiato sulle tue task da quando le hai viste (--visto: segnale "
-             "tutte come viste)", menu="Novità sulle mie task", effects=False, json=True, key="n")
+             "tutte come viste)", menu="Novità sulle mie task", short="Novità", effects=False, json=True, key="n")
 def novita(screen, args):
     data, when = mine(screen)
     if data is None:
@@ -351,7 +351,7 @@ def issue_cmd(screen, args):
 
 
 @app.command("progetti", args="[--tutti]", help="tutti i progetti attivi, i più a rischio prima (per chi li segue: "
-             "scarica tutto)", menu="Tutti i progetti (per chi li segue)", effects=False, json=True, key="p")
+             "scarica tutto)", menu="Tutti i progetti (per chi li segue)", short="Progetti", effects=False, json=True, key="p")
 def progetti(screen, args):
     data, when = everything(screen, args)
     if data is None:
@@ -645,13 +645,13 @@ def nuova_versione(screen, args):
     return 0
 
 
-@app.command("setup", help="configurazione e chiave API, una volta (si può rilanciare)", menu="Prepara pm-kit", key="s")
+@app.command("setup", help="configurazione e chiave API, una volta (si può rilanciare)", menu="Prepara pm-kit", short="Prepara", key="s")
 def setup(screen, args):
     screen.header("preparazione")
     return 0 if run_steps(screen, steps(screen)) else 1
 
 
-@app.command("doctor", help="controlla configurazione, chiave e collegamento", menu="Controlla che sia tutto a posto",
+@app.command("doctor", help="controlla configurazione, chiave e collegamento", menu="Controlla che sia tutto a posto", short="Controlla",
              effects=False, key="c")
 def doctor(screen, args):
     screen.header("controlli")
