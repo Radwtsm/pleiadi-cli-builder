@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pleiadi-cli-builder"
-version = "0.10.0"
+dynamic = ["version"]
 description = "Guided command-line tools: full-screen layout, arrow-key menus, live progress, rerunnable steps, doctor, one-file bundle, animated intro. Standard library only."
 readme = "README.md"
 license = { text = "MIT" }
@@ -16,3 +16,6 @@ pleiadi-cli-builder = "pleiadi_cli_builder.__main__:main"
 
 [tool.setuptools]
 packages = ["pleiadi_cli_builder"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pleiadi_cli_builder.__version__" }  # una sola fonte: __init__.py
