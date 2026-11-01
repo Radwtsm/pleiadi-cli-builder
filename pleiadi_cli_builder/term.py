@@ -27,7 +27,10 @@ TEXTS = {
            "bad_number": "serve un numero (0 o più)",
            "unknown_setting": "Impostazione «{key}» sconosciuta. Ci sono: {keys}",
            "settings_cli": "cambiarle: nel menu, oppure `impostazioni NOME VALORE` («-» = predefinito) · file: {path}",
-           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra"},
+           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra",
+           # compact mode (Screen.compact): the same keys in fewer words
+           "hint_short": "↑↓ Invio scegli · ^C esci", "hint_back_short": "↑↓ Invio scegli · Esc torna · ^C esci",
+           "hint_type_short": "Invio conferma · ^C esci", "hint_read_short": "↑↓ scorri · / cerca · q chiudi"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_back": "↑↓ choose · Enter confirm · Esc back · Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
@@ -47,13 +50,29 @@ TEXTS = {
            "bad_number": "a number is needed (0 or more)",
            "unknown_setting": "Unknown setting «{key}». There are: {keys}",
            "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}",
-           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above"},
+           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above",
+           "hint_short": "↑↓ Enter choose · ^C quit", "hint_back_short": "↑↓ Enter choose · Esc back · ^C quit",
+           "hint_type_short": "Enter confirm · ^C quit", "hint_read_short": "↑↓ scroll · / search · q close"},
 }
 
 # the default logo of the box on top; only blocks every console font has (the classic Windows console too)
 LOGO = (" ▄█▄ ", "▀███▀", " ▀█▀ ")
 
+# below this many columns or rows the full screen is compact (Screen.compact): the title on one line instead of the
+# box with the logo, the information under it, menu items as «[m] Mie» with their short label, a shorter key line.
+# One threshold for all of it (the logo used to go below 60×20); a window that grows again gets the normal view back.
+COMPACT = (70, 22)
+
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\]8;;[^\x1b]*\x1b\\")
+
+
+class Label(str):
+    """A menu option's text with its short form for the compact menu: Label("Le mie task", "Mie") (a str everywhere
+    else, so code that reads the options as text keeps working)."""
+    def __new__(cls, text, short=None):
+        o = str.__new__(cls, text)
+        o.short = short
+        return o
 
 
 class Theme:
@@ -285,7 +304,8 @@ class Screen:
         self.rules, self.live_n = RULES, 0
         self.outcome = False  # the command has said how it ended (done(), summary()): App.call adds one otherwise  # colors by meaning of output(); live lines now at the end of the body
         self.focus, self.over, self.stay = None, False, False  # see visible(), out() and App.menu
-        self.logo, self.about, self.rows = LOGO, None, []  # the box on top: see header() and banner()
+        self.logo, self.about, self.rows, self.subtitle = LOGO, None, [], ""  # the box on top: header(), banner()
+        self.narrow, self.picking = False, None  # compact at the last layout; the open menu's rows (redrawn)
         self.full = self.colors and stdin_tty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.suspended = False
@@ -408,19 +428,38 @@ class Screen:
             sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in self.layout(*self.size)) + "\033[J")
             sys.stdout.flush()
 
+    @staticmethod
+    def compact(w=None, h=None):
+        """True below COMPACT (70 columns or 22 rows): the window of `w`×`h`, by default the terminal's."""
+        if w is None or h is None:
+            size = shutil.get_terminal_size((80, 24))
+            w, h = size.columns if w is None else w, size.lines if h is None else h
+        return w < COMPACT[0] or h < COMPACT[1]
+
     def layout(self, w, h):
         """The lines of a full screen: the box, the content, then the separator and the bottom line right under the
         content, like Claude Code: what you type, the keys and the wait line follow the text instead of staying at
-        the bottom of the window, and go down only when the content fills it."""
+        the bottom of the window, and go down only when the content fills it. Below COMPACT the compact view, decided
+        again at every draw (a resize switches it either way)."""
+        self.narrow = self.compact(w, h)
+        if self.picking:  # the open menu's rows follow the mode: «[m] Mie» compact, the full text otherwise
+            first, render = self.picking
+            rows = render()
+            self.body[first:first + len(rows)] = rows
         head = self.banner(w, h)
-        head = [clip(r, w) for r in head] if h >= len(head) + 8 else []
+        head = ([clip(r, w) for r in head] if h >= len(head) + 8 else
+                [clip(head[0], w)] if head and self.narrow and h >= 9 else [])
         foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or "  " + self.hint_line(), w)]
         room = max(1, h - len(head) - len(foot))
         return (head + [clip(r, w) for r in self.visible(room)] + foot)[:h]
 
     def banner(self, w, h):
-        """The box on top, always fixed: the logo beside the information when the window has room for it."""
-        if not self.head or not self.logo or not self.rows or w < 60 or h < 20:
+        """The box on top, always fixed: the logo beside the information when the window has room for it. Compact
+        (below COMPACT): no box, the title on one line and the information (the tool's notices) right under it."""
+        if self.head and self.rows and self.compact(w, h):
+            sub = self.subtitle
+            return [self.rows[0] + (self.dim(" · " + sub) if sub else "")] + self.rows[1 + bool(sub):]
+        if not self.head or not self.logo or not self.rows:
             return self.head
         wide = max(visible_len(r) for r in self.logo)
         logo = [self.acc(r.ljust(wide)) if "\033" not in r else r + " " * (wide - visible_len(r)) for r in self.logo]
@@ -464,9 +503,14 @@ class Screen:
         """Only the keys that work now (owner: «arrows» shown with nothing to choose was a bug), plus the open
         menu-session accesses («VPN aperta da 4 min»)."""
         from .access import status_line
-        h = self.t.get({"choose": "hint", "back": "hint_back", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
+        h = self._hint_text()
         st = status_line()
         return h + (f" · {st}" if st else "")
+
+    def _hint_text(self):
+        """The keys of this moment; in compact mode their short form (the same keys, fewer words)."""
+        k = {"choose": "hint", "back": "hint_back", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle")
+        return self.t.get(k + "_short", self.t.get(k, "")) if self.narrow else self.t.get(k, "")
 
     def keys(self, items, context=False):
         """[(keys, what they do)] → «↑↓ scegli · Invio conferma»: keys in the accent, bold; what they do, muted.
@@ -484,7 +528,7 @@ class Screen:
     def hint_line(self):
         """The bottom line: the keys of this moment, then the open accesses (muted)."""
         from .access import status_line
-        h = self.t.get({"choose": "hint", "back": "hint_back", "type": "hint_type", "read": "hint_read"}.get(self.mode, "hint_idle"), "")
+        h = self._hint_text()
         st = status_line()
         return self.keys(pairs(h)) + (self.dim(f" · {st}") if st else "")
 
@@ -509,6 +553,7 @@ class Screen:
         """The opening box, like Claude Code's: fixed at the top for the whole session. logo = a few rows of blocks
         (App(banner=…)), about() = more lines of information (App(banner_info=…)); no logo in a narrow or low window."""
         lines = [self.acc(self.theme.mark + " ") + self.bold(self.title) + self.dim(f"  {self.name}")]
+        self.subtitle = subtitle
         if subtitle:
             lines.append("  " + subtitle)
         try:
@@ -851,13 +896,16 @@ class Screen:
             self.no_input, r = True, ""
         return r or default
 
-    def choose(self, question, options, header=None, keys=None, start=0, esc=None):
+    def choose(self, question, options, header=None, keys=None, start=0, esc=None, short=None):
         """options = [text]; the first is the recommended one. Returns the index. Arrows + Enter (or the number);
         without a real terminal: type the number. header = column titles shown above the options (a table).
         keys = one letter per option (None: none): shown as a chip on its row, that letter picks it at once.
         start = the option the cursor starts on (coming back from where you went in).
-        esc = the option Esc picks (the «Back» or «Quit» one): the same key goes back everywhere."""
+        esc = the option Esc picks (the «Back» or «Quit» one): the same key goes back everywhere.
+        short = a short label per option, shown instead of the text in compact mode (Screen.compact); an option
+        can also carry its own (Label)."""
         keys = list(keys or [])
+        short = list(short) if short else [getattr(o, "short", None) for o in options]
         self.out("")
         self.out("  " + self.acc("?") + " " + self.bold(question))
         asked = len(self.body) - 1
@@ -865,7 +913,8 @@ class Screen:
             self.out(self._menu_header(header, len(options)))
         if self.colors and stdin_tty():
             try:
-                return self._menu(options, recommend=not header, keys=keys, start=start, asked=asked, esc=esc)
+                return self._menu(options, recommend=not header, keys=keys, start=start, asked=asked, esc=esc,
+                                  short=short)
             except (OSError, ImportError):
                 pass  # no single keys (odd console): fall back to the number
         for i, o in enumerate(options):
@@ -884,7 +933,10 @@ class Screen:
     def _menu_row(self, i, o, sel, n, rec, key=None):
         """One option, its number right-aligned (1..n) so that texts start in the same column as the header. The
         selected one is a bar across the width (accent on a dark background), like Claude Code's. key = its
-        shortcut letter, a chip after the text (also inside the bar)."""
+        shortcut letter, a chip after the text (also inside the bar). Compact mode (self.narrow): an option with a
+        letter is «[m] Mie», the letter in front and no number (the digits still pick it)."""
+        if self.narrow and key:
+            return self._compact_row(i, o, sel, key)
         nw = len(str(n))
         chip = self.c(self.theme.shortcut, f" {key} ") if key else ""
         w = self.text_width() - 6 - nw - (len(key) + 4 if key else 0)
@@ -900,14 +952,23 @@ class Screen:
             return self.c(bar_style, bar + "  ") + chip + self.c(bar_style, " " * rest)
         return self.dim(f"    {num} ") + o + (self.dim(rec) if has_note else "") + ("  " + chip if key else "")
 
+    def _compact_row(self, i, o, sel, key):
+        full = max(20, min(shutil.get_terminal_size((80, 24)).columns - 1, 100))  # text_width() stops at 40
+        w = full - 8 - len(key)
+        o = o if len(o) <= w else o[:w - 1] + "…"
+        if i == sel:
+            return self.c(f"{self.theme.accent};1;{self.theme.select}", f"  {self.theme.prompt} [{key}] {o}".ljust(full))
+        return "    " + self.dim("[") + self.c(f"{self.theme.accent};1", key) + self.dim("]") + " " + o
+
     def _menu_header(self, header, n):
         pad = " " * (4 + len(str(n)) + 2)
         return pad + self.bold(header) + "\n" + pad + self.dim("─" * visible_len(header))
 
-    def _menu(self, options, recommend=True, keys=(), start=0, asked=0, esc=None):
+    def _menu(self, options, recommend=True, keys=(), start=0, asked=0, esc=None, short=None):
         rec = "  " + self.t["recommended"] if recommend else ""
         letter = {k: i for i, k in enumerate(keys) if k}
-        row = lambda i, o: self._menu_row(i, o, sel, n, rec, keys[i] if i < len(keys) else None)
+        label = lambda i, o: short[i] if self.narrow and short and i < len(short) and short[i] else o
+        row = lambda i, o: self._menu_row(i, label(i, o), sel, n, rec, keys[i] if i < len(keys) else None)
         sel, n = min(max(0, start), len(options) - 1), len(options)
         self.mode = "choose" if esc is None else "back"
 
@@ -919,22 +980,27 @@ class Screen:
                 first = len(self.body)
                 self.body += [row(i, o) for i, o in enumerate(options)]
                 self.focus = (asked, first + sel)
+                self.picking = (first, lambda: [row(i, o) for i, o in enumerate(options)])  # redrawn on a resize
             self.draw()
-            while True:
-                k = key()
-                if k == "enter":
-                    break
-                if k in letter:  # a shortcut: picked at once
-                    sel = letter[k]
-                    break
-                if k == "esc" and esc is not None:
-                    sel = esc
-                    break
-                sel = move(k)
+            try:
+                while True:
+                    k = key()
+                    if k == "enter":
+                        break
+                    if k in letter:  # a shortcut: picked at once
+                        sel = letter[k]
+                        break
+                    if k == "esc" and esc is not None:
+                        sel = esc
+                        break
+                    sel = move(k)
+                    with self.lock:
+                        self.body[first:first + n] = [row(i, o) for i, o in enumerate(options)]
+                        self.focus = (asked, first + sel)
+                    self.draw()
+            finally:
                 with self.lock:
-                    self.body[first:first + n] = [row(i, o) for i, o in enumerate(options)]
-                    self.focus = (asked, first + sel)
-                self.draw()
+                    self.picking = None
             with self.lock:
                 self.body[first:] = ["    " + self.acc(self.theme.prompt + " ") + options[sel]]
                 self.focus = None
