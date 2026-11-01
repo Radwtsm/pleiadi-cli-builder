@@ -1,14 +1,16 @@
 """pm-kit against a fake Redmine with invented data (never a real tracker in tests)."""
-import datetime, http.server, io, json, os, sys, tempfile, threading, unittest, urllib.parse
+import datetime, functools, http.server, io, json, os, shutil, subprocess, sys, tempfile, threading, unittest, \
+    urllib.parse
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["PCB_GLYPHS"] = "full"  # the tests compare symbols: the same set in every terminal
 sys.path[:0] = [HERE, os.path.dirname(os.path.dirname(HERE))]
-from pleiadi_cli_builder import credentials, term
+from pleiadi_cli_builder import bundle, credentials, install, term
 from pleiadi_cli_builder.contract import tests as contract_tests
 from pm_kit import redmine
+from pm_kit import __main__ as pm_main
 from pm_kit.__main__ import app
 
 TODAY = datetime.date.today()
@@ -583,6 +585,106 @@ class Commands(unittest.TestCase):
         code, out, err = quiet(lambda: app.main(["doctor"]))
         self.assertEqual(code, 1)
         self.assertIn("401", out + err)
+
+
+class Install(unittest.TestCase):
+    """pm-kit as people get it: the .pyz from the release, installed into an empty folder, with no clone around."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.pyz = os.path.join(self.tmp, "dist", "pm-kit.pyz")
+        os.makedirs(os.path.dirname(self.pyz))
+        bundle(HERE, "pm_kit.__main__:main", self.pyz)  # as tools/release.py does
+        self.home, self.work = os.path.join(self.tmp, "home"), os.path.join(self.tmp, "vuota")
+        os.makedirs(self.home)
+        os.makedirs(self.work)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def call(self, *argv):
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PM_KIT_CONFIG")}
+        env.update(HOME=self.home, USERPROFILE=self.home, NO_COLOR="1")
+        r = subprocess.run(list(argv), cwd=self.work, env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, encoding="utf-8", timeout=60)
+        return r.returncode, r.stdout, r.stderr
+
+    def test_install_in_an_empty_folder_and_run(self):
+        code, out, err = self.call(sys.executable, "-I", self.pyz, "installa", "--prova")
+        self.assertEqual((code, os.listdir(self.home)), (0, []), out + err)
+        code, out, err = self.call(sys.executable, "-I", self.pyz, "installa")
+        self.assertEqual(code, 0, out + err)
+        name = "pm-kit.cmd" if os.name == "nt" else "pm-kit"
+        command = os.path.join(self.home, ".local", "bin", name)
+        self.assertTrue(os.path.isfile(command), out + err)
+        self.assertTrue(os.path.isfile(os.path.join(self.home, ".pm-kit", "pm-kit.pyz")))
+        shutil.rmtree(os.path.dirname(self.pyz))  # the downloaded file is gone: the command uses its own copy
+        launch = ["cmd", "/c", command] if os.name == "nt" else [command]
+        code, out, err = self.call(*launch, "help")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("pm-kit installa", out)
+        self.assertNotIn("Traceback", out + err)
+        code, out, err = self.call(*launch, "impostazioni", "--json")
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("url", json.loads(out))
+        self.assertFalse(os.path.exists(os.path.join(self.work, "pm_kit")))
+
+    def test_from_a_clone_says_how(self):
+        code, out, err = quiet(lambda: app.main(["installa"]))
+        self.assertEqual(code, 1)
+        self.assertIn("pm-kit.pyz installa", out + err)
+
+
+def read(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+class NewVersion(unittest.TestCase):
+    """`nuova-versione` replaces the installed file only when the published sha256 matches."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.pub = os.path.join(self.tmp, "release")
+        os.makedirs(self.pub)
+        bundle(HERE, "pm_kit.__main__:main", os.path.join(self.pub, "pm-kit.pyz"))
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=self.pub)
+        handler.log_message = lambda *a: None
+        self.srv = Quiet(("127.0.0.1", 0), handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.home = os.path.join(self.tmp, "home")
+        self.patches = [mock.patch.object(install, "HOME", self.home),
+                        mock.patch.object(pm_main, "RELEASE", f"http://127.0.0.1:{self.srv.server_port}/pm-kit.pyz")]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.srv.shutdown()
+        self.srv.server_close()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_update_only_when_checksum_matches(self):
+        code, out, err = quiet(lambda: app.main(["nuova-versione"]))
+        self.assertEqual(code, 1)  # not installed yet: says how
+        self.assertIn("installa", out + err)
+        dest = pm_main.installed_pyz()
+        os.makedirs(os.path.dirname(dest))
+        with open(dest, "wb") as f:
+            f.write(b"vecchia")
+        code, out, err = quiet(lambda: app.main(["nuova-versione", "--prova"]))
+        self.assertEqual((code, read(dest)), (0, b"vecchia"), out + err)
+        code, out, err = quiet(lambda: app.main(["nuova-versione"]))
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(read(dest), read(os.path.join(self.pub, "pm-kit.pyz")))
+        with open(os.path.join(self.pub, "pm-kit.pyz.sha256"), "w") as f:
+            f.write("0" * 64 + "  pm-kit.pyz\n")
+        with open(dest, "wb") as f:
+            f.write(b"vecchia")
+        code, out, err = quiet(lambda: app.main(["nuova-versione"]))
+        self.assertEqual((code, read(dest)), (1, b"vecchia"), out + err)
+        self.assertIn("checksum", out + err)
 
 
 credentials.KEYCHAIN = credentials.MemoryOnly()  # never the real keychain in tests

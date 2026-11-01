@@ -10,8 +10,8 @@ percorsi privati, mai codice o dati di chi la usa (un tool aziendale vive nel re
 - Mai cambiare in modo incompatibile un nome pubblico di `__init__.py`: aggiungi, poi deprecazione.
 - Prima del commit: tutti i `tests/test_*.py` verdi (include una prova vera a schermo intero in un pty); lo fa il
   pre-commit (`git config core.hooksPath .githooks`, con gitleaks).
-- Release: `python3 tools/release.py` → `dist/pleiadi-cli-builder.pyz` + `.sha256`, poi tag `vX.Y.Z` e
-  `gh release create` con i due file (il README rimanda a `releases/latest`).
+- Release: `python3 tools/release.py` → `dist/pleiadi-cli-builder.pyz` e `dist/pm-kit.pyz`, ognuno col suo
+  `.sha256`, poi tag `vX.Y.Z` e `gh release create` con i quattro file (il README rimanda a `releases/latest`).
 - Output pensato anche per Claude (che legge ogni riga a token): righe brevi, ✓/✗ con cosa fare, un riepilogo;
   i dati con `--json`. Mai log interi a schermo: l'ultima riga utile, il resto in un file.
 - Colori per ruolo, come Claude Code (`Theme`, mai codici scritti a mano fuori da lì): un solo accento per ciò che è

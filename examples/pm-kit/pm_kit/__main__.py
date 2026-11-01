@@ -16,10 +16,12 @@ La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file.
 (o `pm-kit impostazioni NOME VALORE`), senza toccare il file; «Rifai da capo» riparte da una preparazione pulita.
 Novità: cosa ho visto di ogni mia task (ora di aggiornamento, stato, scadenza, fatto, priorità, assegnatario; niente
 titoli né testi) sta in viste.json accanto alle copie locali: ● nella lista finché non la apro."""
-import datetime, os, shlex, shutil, urllib.error
+import datetime, os, shlex, shutil, urllib.error, zipfile
 
 from pleiadi_cli_builder import (KEEP, App, HTTPError, ReadOnlyClient, Setting, Step, copy_to_clipboard, credentials,
-                                 edit_settings, pin_step, read_json, run, run_steps, secret, temporary, write_json)
+                                 edit_settings, install_launcher, pin_step, read_json, run, run_steps, secret,
+                                 self_update, temporary, write_json)
+from pleiadi_cli_builder import install
 from pm_kit import redmine
 
 app = App("pm-kit", title="PM kit", accent="#4a6cf7", menu_subtitle="i progetti in lavorazione")
@@ -594,6 +596,52 @@ def copia(screen, args):
         return 0
     write_json(config_path(), {**cfg, "copia_locale": keep})
     screen.info("copia locale attiva" if keep else f"copia locale disattivata: `{app.cmd('copia')} cancella` toglie quella vecchia")
+    return 0
+
+
+RELEASE = "https://github.com/Radwtsm/pleiadi-cli-builder/releases/latest/download/pm-kit.pyz"
+
+
+def running_pyz():
+    """The .pyz this code runs from (`python3 pm-kit.pyz`), or None when it runs from a clone."""
+    archive = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return archive if os.path.isfile(archive) and zipfile.is_zipfile(archive) else None
+
+
+def installed_pyz():
+    return os.path.join(install.home_of(app.name), "pm-kit.pyz")
+
+
+@app.command("installa", help="il comando pm-kit in ~/.local/bin, dal file pm-kit.pyz che stai lanciando", menu=None)
+def installa(screen, args):
+    pyz = running_pyz()
+    if not pyz:
+        screen.todo("Si installa dal file: scarica pm-kit.pyz dalla release, poi `python3 pm-kit.pyz installa`")
+        return 1
+    if screen.dry:
+        screen.info(f"farei: copio {pyz} in {installed_pyz()} e scrivo il comando {app.name} in {install.BIN}")
+        return 0
+    command = install_launcher(app.name, pyz)
+    screen.done(f"installato: {command} (apri un terminale nuovo se `{app.name}` non si trova)")
+    return 0
+
+
+@app.command("nuova-versione", help="scarica l'ultima versione di pm-kit, solo se il suo sha256 corrisponde",
+             menu=None)
+def nuova_versione(screen, args):
+    dest = installed_pyz()
+    if not os.path.exists(dest):
+        screen.todo(f"pm-kit non è installato in {dest}: prima `python3 pm-kit.pyz installa`")
+        return 1
+    if screen.dry:
+        screen.info(f"farei: scarico pm-kit.pyz dall'ultima release, controllo il suo sha256 e sostituisco {dest}")
+        return 0
+    with screen.wait("scarico l'ultima versione"):
+        ok, why = self_update(RELEASE, dest, RELEASE + ".sha256")
+    if not ok:
+        screen.todo(f"non aggiornato ({why}): riprova più tardi o scarica a mano dalla release")
+        return 1
+    screen.done("già l'ultima versione" if why == "up to date" else "aggiornato: vale dal prossimo avvio")
     return 0
 
 

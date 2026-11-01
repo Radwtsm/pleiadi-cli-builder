@@ -17,6 +17,8 @@ un'istantanea dei dati (`--aggiorna` per riscaricarla), tabella o `--json`.
 | `pm-kit issue N` | una task nel dettaglio: stato, priorità, assegnatario, scadenza, avanzamento, versione, autore, date (in rosso ritardo e urgenza, in giallo scadenza vicina, ferma da più di 14 giorni o ti cita, in verde se è tua); descrizione leggibile, note e cambi di stato dalle più recenti, relazioni e sotto-task, allegati. Da `mie` e `task` si apre anche con Invio sulla riga; se è cambiata da quando l'ho vista, prima la sezione «Cosa è cambiato» (i campi cambiati) e le note e gli allegati arrivati dopo sono segnati ● (gli allegati nuovi in cima, «nuova versione» se un file con lo stesso nome c'era già): `n`/`N` li scorrono uno per uno, «nuove 2/7» in basso |
 | `pm-kit allegati N` | tutti gli allegati della task in `<cartella_download>/<N>/` (la cartella la chiede `setup`); nella vista della task: `d` li scarica, `c` copia il numero |
 | `pm-kit copia si\|no\|cancella` | la copia locale dei dati: attiva, disattiva, cancella |
+| `pm-kit installa` | dal file `pm-kit.pyz` della release: il comando `pm-kit` in `~/.local/bin` (come installarlo: README della libreria, «pm-kit su un altro computer») |
+| `pm-kit nuova-versione` | scarica l'ultimo `pm-kit.pyz` dalla release e sostituisce quello installato solo se il suo sha256 corrisponde |
 
 Configurazione (`~/.config/pm-kit/config.json`, o il percorso in `PM_KIT_CONFIG`): `url` e `user`; se serve
 `ca_file` (CA interna) oppure `pin_sha256` + `pin_expires` (vedi `pleiadi-cli-builder impronta HOST`), e `vpn` con
