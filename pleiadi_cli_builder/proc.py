@@ -1,7 +1,7 @@
 """Running other programs: captured, interactive (the person answers), or live into the spinner line."""
 import os, queue, re, signal, subprocess, sys, threading, time
 
-from .term import SCREENS, SECRETS, WIN, duration, mask, progress, role_of, RULES
+from .term import SCREENS, SECRETS, WIN, duration, key_ready, mask, progress, role_of, RULES
 
 # Windows: from a detached background run every child would flash a black console window
 NO_WINDOW: dict = {"creationflags": 0x08000000} if WIN else {}
@@ -164,11 +164,14 @@ def _on_hangup(*_):
     raise KeyboardInterrupt  # the terminal closed: the program in its own group would keep running otherwise
 
 
-def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=None, rules=None):
+def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=None, rules=None,
+             scrollback=500):
     """Like run, but every line of the program (also the \\r ones of progress bars) goes into the open spinner
     line, with the percentage when the line has one. Returns (exit code, output).
     show = in full screen the last lines also scroll live under the current step, colored by their meaning, like
-    Claude Code (0: only the spinner line); at the end what didn't fit is counted.
+    Claude Code (0: only the spinner line); at the end what didn't fit is counted. Meanwhile the keys scroll them
+    (↑↓ PgUp PgDn Home End, the wheel): scrolled up the view stays put and counts the new lines, End follows again;
+    the last `scrollback` lines are kept. Ctrl+C works all the time.
     log = a file path: the whole output goes there (secrets masked); what comes back is only the error lines, the
     last line and where the log is — long builds don't flood the screen (or Claude's context).
     on_line = a function called with each line (without colors, secrets masked) as it arrives.
@@ -178,9 +181,11 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
     what may be left half-done. The program has no terminal of its own: one that asks something goes in
     run(..., interactive=True)."""
     check(cmd)
+    screen = SCREENS[-1] if SCREENS else None
+    scroll = bool(screen and show > 0 and screen.full and screen.interactive)  # the keys are ours: the program gets no stdin
     try:
         p = subprocess.Popen(list(cmd), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             **_group())
+                             stdin=subprocess.DEVNULL if scroll else None, **_group())
     except OSError as e:
         return 1, str(e)
     chunks = queue.Queue()
@@ -203,7 +208,7 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
         logf = open(log, "w", encoding="utf-8", newline="\n")
     out, rest, t0 = [], b"", time.time()
     end = t0 + timeout
-    screen, shown = (SCREENS[-1] if SCREENS else None), 0
+    shown = 0
 
     def take(raw):
         nonlocal shown
@@ -215,24 +220,34 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
             logf.write(t + "\n")  # the log stays without colors
         if on_line:
             on_line(t)
-        if screen and screen.live(t, show, rules):
+        if screen and screen.live(t, show, rules, scrollback, draw=False):
             shown += 1
         pc = re.search(r"(\d{1,3})(?:[.,]\d+)?\s?%", t)
         progress(int(pc.group(1)) / 100 if pc and int(pc.group(1)) <= 100 else None, t)
     try:
         try:
+            if scroll:
+                screen.live_scroll(True)
             eof = False
             while not eof:
-                try:
-                    chunk = chunks.get(timeout=0.05)  # short: Ctrl+C is seen at once on Windows too
-                except queue.Empty:
-                    chunk = None
-                if chunk is not None:
+                got, before = 0, shown
+                while not eof and got < 64:  # what has arrived, then one drawing for all of it
+                    try:
+                        chunk = chunks.get(timeout=0.05) if not got and not scroll else chunks.get_nowait()
+                    except queue.Empty:  # short waits: Ctrl+C is seen at once on Windows too
+                        break
+                    got += 1
                     eof = not chunk
                     lines = re.split(rb"[\r\n]", rest + chunk)
                     rest = b"" if eof else lines.pop()
                     for r in lines:
                         take(r)
+                if shown != before:
+                    screen.draw()
+                if scroll and not eof:
+                    k = key_ready(0 if got else 0.05)
+                    if k:
+                        screen.live_key(k)
                 if not eof and time.time() > end:
                     stop_tree(p)
                     out.append("timeout")
@@ -245,6 +260,8 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
             stop_tree(p)
             raise
     finally:
+        if scroll:
+            screen.live_scroll(False)
         if hangup:
             for s, h in hangup.items():
                 signal.signal(s, h)
