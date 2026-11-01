@@ -15,7 +15,7 @@ from .steps import Result, Step, phase, run_steps
 from .term import GIT_RULES, MSBUILD_RULES, RULES, SVN_RULES, Screen, Theme, clip, key, progress, role_of
 from .webapi import HTTPError, ReadOnlyClient, pin_step, server_certificate
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 __all__ = ["App", "Screen", "Theme", "Step", "Result", "run_steps", "run", "run_live", "progress", "Scene", "play",
            "SHAPES", "TINTS", "bundle", "install_launcher", "self_update", "read_json", "write_json", "clip", "key",
            "temporary", "secret", "forget", "ReadOnlyClient", "HTTPError", "pin_step", "PolicyError",
