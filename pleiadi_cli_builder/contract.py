@@ -11,13 +11,18 @@
   effects), raises nothing and shows no traceback, closes every step it shows (⏺) with its ✓/✗, ends with an outcome
   (✓ green or ✗ red and what; App.call adds one when the command doesn't say it, the summary box counts too) and
   exits coherently: 0 ⇔ the outcome is not ✗ (ux_problems);
+- every menu item, opened from the menu in a real terminal (pty, screentest.check_sizes: 60×20, 80×24, 120×40 and
+  resized while open) with an empty HOME (a fake configuration: first run done, nothing else) and --prova when it
+  has effects, keeps every frame inside the window with its separator and key line and shows no traceback
+  (Session.problems); skipped where there is no pty (Windows);
 - the tool's code never loads code at run time (exec, eval, importlib, runpy, __import__): configuration is
   read as JSON (App.config)."""
 import io, json, os, re, shutil, sys, tempfile, unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from . import proc, steps
+from . import proc, screentest, steps
+from .app import HELP, App
 from .term import ANSI
 
 CALLS, MODULES = {"exec", "eval", "__import__"}, {"importlib", "runpy"}
@@ -102,9 +107,29 @@ def _source_of(app):
     return None
 
 
-def tests(app, source=None):
+def _open_from_menu(app, home):
+    """In the pty's child: the app's menu with an empty HOME of its own (the sizes run at the same time; first run
+    done), commands with --prova."""
+    home = tempfile.mkdtemp(dir=home)
+    os.environ["HOME"] = os.environ["USERPROFILE"] = home
+    os.chdir(home)
+    apps = [app]
+    for a in apps:
+        apps += a.sections.values()
+        a.state_path = os.path.join(home, ".config", a.name, "state.json")
+        a.cache_dir = os.path.join(home, ".cache", a.name, "snapshots")
+        def call(c, screen, args, call=a.call):  # the child is thrown away: patching it touches nothing else
+            return call(c, screen, list(args) + (["--prova"] if c.dry else []))
+        a.call = call
+    if app.first_run:
+        app.save_state(first_run_done=True)
+    return app.main([])
+
+
+def tests(app, source=None, screens=True, settle=0.8):
     """A unittest.TestCase class with one test per rule and command. source = the tool's package folder (default:
-    the folder of the module that defines its commands)."""
+    the folder of the module that defines its commands). screens=False: without the menu items in a pty (each
+    takes a few seconds); settle = seconds a menu item gets to draw before its screen is read."""
     source = source or _source_of(app)
 
     def run_cmd(argv, home, colors=False):
@@ -174,6 +199,38 @@ def tests(app, source=None):
         self.assertEqual(found, [], "code loaded at run time (configuration must be JSON, App.config):\n"
                          + "\n".join(f"{f}:{n}: {l}" for f, n, l in found))
 
+    def screen_test(path):
+        @unittest.skipUnless(screentest.available(), "no pty here (Windows)")
+        def test(self):
+            home = tempfile.mkdtemp()
+            try:
+                keys = []
+                for question, k, _, _ in path:  # each menu's question, then the item's letter
+                    keys += [screentest.wait(question), screentest.keys(k)]
+                env = {"HOME": home, "USERPROFILE": home, "PCB_COLORS": "1", "NO_COLOR": ""}
+                runs = screentest.check_sizes(lambda: _open_from_menu(app, home), keys + [screentest.pause(settle)],
+                                              env=env, settle=settle / 2)
+                problems = [f"{n}: {p}" for n, s in runs.items() for p in s.problems()]
+                _, _, label, a = path[-1]
+                where = f" {a.theme.crumb} ".join(a.crumbs + [label])
+                if where not in runs["120x40"].text():  # it was opened: «Tool › Item» on top
+                    problems.append(f"«{where}» never on screen: the item didn't open")
+                self.assertEqual(problems, [], f"menu {where}: {problems}\n" + "\n".join(
+                    f"══ {n}\n{s.report()}" for n, s in runs.items()))
+            finally:
+                shutil.rmtree(home, ignore_errors=True)
+        return test
+
+    def menu_paths(a, before=()):
+        """[(words, [(question, letter, label)…])] for every action reachable from a's menu."""
+        out, question = [], HELP.get(a.lang, HELP["en"])[2]
+        for c, k in zip(a._menu_items(), a.menu_keys()):
+            step = before + ((question, k, c.menu.rstrip(" ›"), a),)
+            sub = (c.fn.__defaults__ or (None,))[-1]  # a section's item opens that App's menu
+            sub = sub if isinstance(sub, App) else None
+            out += menu_paths(sub, step) if sub else [step]
+        return out
+
     body = {"test_no_code_loading": code_test}
     entries = [([c.name], c) for c in app.commands.values()]
     for sec, sub in getattr(app, "sections", {}).items():
@@ -185,4 +242,6 @@ def tests(app, source=None):
         body[f"test_ux_{key}"] = ux_test(c, words)
         if c.json:
             body[f"test_json_{key}"] = json_test(c, words)
+    for path in menu_paths(app) if screens else []:
+        body["test_screen_" + re.sub(r"\W", "_", "_".join(k for _, k, _, _ in path))] = screen_test(path)
     return type("Contract_" + re.sub(r"\W", "_", app.name), (unittest.TestCase,), body)

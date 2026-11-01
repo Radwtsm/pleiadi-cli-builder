@@ -7,8 +7,11 @@ lines — so a test (or Claude, reading text) can check what was on screen and t
 
 Checks every frame shown at the end of each size (problems()): no more lines than the window, none wider, the
 separator and the key line under the content, no Python traceback. Mac and Linux (stdlib pty); Windows: available()
-is False and the tests skip."""
-import os, select, signal, struct, time
+is False and the tests skip.
+
+argv can also be a function: it runs in the forked child (with the same modules already loaded, e.g. an App and its
+commands: run_screen(lambda: app.main([]), …)), its return is the exit code."""
+import os, select, signal, struct, sys, time, traceback
 
 from .term import ANSI, visible_len
 
@@ -116,13 +119,40 @@ def _set_size(fd, columns, lines):
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", lines, columns, 0, 0))
 
 
+def _call(fn, env):
+    """In the forked child: fn() with the pty as stdin/stdout/stderr, then exit without running the parent's
+    cleanups (its buffered output, atexit)."""
+    code = 1
+    try:
+        for k in ("COLUMNS", "LINES"):
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        sys.stdin = open(0, "r", encoding="utf-8", closefd=False)
+        sys.stdout = open(1, "w", encoding="utf-8", closefd=False)
+        sys.stderr = open(2, "w", encoding="utf-8", closefd=False)
+        r = fn()
+        code = r if isinstance(r, int) else 0
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+    except BaseException:
+        traceback.print_exc()
+    finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            os._exit(code)
+
+
 def run_screen(argv, steps=(), columns=80, lines=24, env=None, timeout=20, settle=0.6):
-    """Runs argv in a pty columns×lines and plays `steps` (wait/keys/size/pause); at the end, if it is still
-    running, it is stopped. Returns a Session."""
-    import fcntl, pty, termios  # noqa: F401 — imported before fork (an import in the child can deadlock)
+    """Runs argv (a command line, or a function called in the child) in a pty columns×lines and plays `steps`
+    (wait/keys/size/pause); at the end, if it is still running, it is stopped. Returns a Session."""
+    import fcntl, pty, termios, tty  # noqa: F401 — imported before fork (an import in the child can deadlock)
     pid, fd = pty.fork()
     if pid == 0:
         _set_size(0, columns, lines)
+        if callable(argv):
+            _call(argv, {"TERM": "xterm-256color", **(env or {})})
         e = {k: v for k, v in os.environ.items() if k not in ("COLUMNS", "LINES")}  # they would pin the size
         e.update(TERM="xterm-256color", **(env or {}))
         os.execvpe(argv[0], list(argv), e)
@@ -178,10 +208,40 @@ def run_screen(argv, steps=(), columns=80, lines=24, env=None, timeout=20, settl
     return Session(raw, phases, code)
 
 
+def _in_parallel(runs):
+    """{name: fn} → {name: fn()}, each in a forked process at the same time (a session is mostly waiting)."""
+    import pickle
+    pending = {}
+    for name, fn in runs.items():
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(r)
+            try:
+                data = pickle.dumps(fn())
+            except BaseException as e:
+                data = pickle.dumps(RuntimeError(f"{type(e).__name__}: {e}"))
+            with os.fdopen(w, "wb") as f:
+                f.write(data)
+            os._exit(0)
+        os.close(w)
+        pending[name] = (pid, r)
+    out = {}
+    for name, (pid, r) in pending.items():
+        with os.fdopen(r, "rb") as f:
+            data = f.read()
+        os.waitpid(pid, 0)
+        out[name] = pickle.loads(data) if data else RuntimeError("the session process ended without a result")
+    for name, v in out.items():
+        if isinstance(v, BaseException):
+            raise RuntimeError(f"{name}: {v}")
+    return out
+
+
 def check_sizes(argv, steps=(), sizes=((60, 20), (80, 24), (120, 40)), **kw):
     """The same screen at several sizes, then resized while open (largest → smallest → largest): {name: Session}.
-    `steps` should reach the screen and leave it open; the run ends by itself."""
-    out = {f"{c}x{l}": run_screen(argv, steps, c, l, **kw) for c, l in sizes}
+    `steps` should reach the screen and leave it open; the run ends by itself. The sessions run at the same time."""
     big, small = max(sizes), min(sizes)
-    out["resize"] = run_screen(argv, list(steps) + [size(*small), size(*big)], *big, **kw)
-    return out
+    runs = {f"{c}x{l}": (lambda c=c, l=l: run_screen(argv, steps, c, l, **kw)) for c, l in sizes}
+    runs["resize"] = lambda: run_screen(argv, list(steps) + [size(*small), size(*big)], *big, **kw)
+    return _in_parallel(runs)
