@@ -220,19 +220,87 @@ def key():
     return "enter" if k in ("\r", "\n") else k
 
 
-# Colors by meaning for the output of programs: the first rule that matches gives the line its Theme role. The rules
-# look at the line without its file names, so "errorHandler.cpp" or "error.log" don't make a line an error.
+# Colors by meaning for the output of programs: (regex, Theme role) rules, the first one wins. role_of() gives a whole
+# line the role of the first rule that matches it; Screen.highlight() colors only what each rule catches. File names
+# come before words: a match that cuts a file name doesn't count, so "errorHandler.cpp" or "error.log" are not errors
+# (a rule may still catch a whole file name). A regex may be a string or compiled.
 RULES = [(re.compile(r"(?i)\b(error|errore|errors|failed|failure|fatal|exception|traceback|denied|panic|conflict)\b"), "error"),
          (re.compile(r"(?i)\b(warn|warning|warnings|attenzione|avviso|deprecated|skipped)\b"), "warn"),
          (re.compile(r"(?i)\b(ok|done|success|successful|passed|completed|completato|fatto|riuscito)\b"), "ok")]
 FILE_NAME = re.compile(r"[\w.~/\\-]*\w\.[A-Za-z][A-Za-z0-9]{0,5}\b")
 
 
+def _rules(rules):
+    return [(re.compile(rx) if isinstance(rx, str) else rx, role) for rx, role in rules]
+
+
+# ready-made rules for the output of some common programs (screen.highlight(text, GIT_RULES), run_live(rules=…))
+SVN_RULES = _rules([
+    (r"^svn: E\d+:.*", "error"),
+    (r"^svn: warning: W\d+:.*", "warn"),
+    (r"^(?:Conflict discovered in|Tree conflict on|Summary of conflicts:|\s+(?:Text|Property|Tree) conflicts: \d+).*",
+     "error"),
+    (r"^ {0,6}C(?= )", "error"),  # the conflict letter: content (1st column), properties (2nd), tree (7th)
+    (r"^[!~](?= )", "warn"),  # missing, obstructed
+    (r"^D(?= )", "warn"),
+    (r"^A(?= )", "ok"),
+    (r"^\?(?= )", "dim"),
+    (r"^(?:Updated to|At|Committed|Checked out) revision \d+\.", "ok")])
+GIT_RULES = _rules([
+    (r"^(?:fatal|error):.*", "error"),
+    (r"^CONFLICT \(.*", "error"),
+    (r"^Automatic merge failed.*", "error"),
+    (r"^ ! \[(?:remote )?rejected\].*", "error"),
+    (r"^\s+both (?:modified|added|deleted):.*", "error"),
+    (r"^(?:UU|AA|DD|AU|UA|UD|DU)(?= )", "error"),
+    (r"^warning:", "warn"),
+    (r"^hint:.*", "dim"),
+    (r"^(?:Already up to date\.|Fast-forward|Switched to (?:a new )?branch .*|Successfully rebased.*)$", "ok")])
+MSBUILD_RULES = _rules([
+    (r"\b(?:fatal )?(?:error|errore) [A-Z]{1,4}\d{3,5}\b", "error"),
+    (r"\b(?:warning|avviso) [A-Z]{1,4}\d{3,5}\b", "warn"),
+    (r"^(?:Build FAILED\.|Compilazione NON riuscita\.)", "error"),
+    (r"(?<!\S)[1-9]\d* (?:Error\(s\)|errori)$", "error"),
+    (r"(?<!\S)[1-9]\d* (?:Warning\(s\)|avvisi)$", "warn"),
+    (r"^(?:Build succeeded\.|Compilazione completata\.)", "ok"),
+    (r"\[[^\[\]]+\.\w*proj\]$", "dim"),  # the project at the end of each line
+    (r"^\s*(?:Time Elapsed|Tempo trascorso) .*", "dim")])
+
+
+def _found(text, rx, names):
+    """The matches of rx in text that don't cut a file name (names = their spans)."""
+    pos = 0
+    while pos <= len(text):
+        m = rx.search(text, pos)
+        if not m:
+            return
+        a, b = m.span()
+        pos = b if b > a else b + 1
+        if a == b:
+            continue
+        if any(a < e and b > s and not (a <= s and b >= e) for s, e in names):
+            pos = a + 1  # inside a file name: look further on
+            continue
+        yield a, b
+
+
+def spans(line, rules=None):
+    """[(start, end, role)] of a line (without color codes): what each rule catches; where two overlap, the first
+    rule wins."""
+    names = [m.span() for m in FILE_NAME.finditer(line)]
+    taken = []
+    for rx, role in _rules(RULES if rules is None else rules):
+        taken += [(a, b, role) for a, b in _found(line, rx, names)
+                  if not any(a < e and b > s for s, e, _ in taken)]
+    return sorted(taken)
+
+
 def role_of(line, rules=None):
-    """The Theme role of a line of output ("error", "warn", "ok", …) or None."""
-    text = FILE_NAME.sub(" ", ANSI.sub("", line))
-    for rx, role in (RULES if rules is None else rules):
-        if rx.search(text):
+    """The Theme role of a line of output ("error", "warn", "ok", …) or None: the first rule that matches it."""
+    text = ANSI.sub("", line)
+    names = [m.span() for m in FILE_NAME.finditer(text)]
+    for rx, role in _rules(RULES if rules is None else rules):
+        if next(_found(text, rx, names), None):
             return role
     return None
 
@@ -385,12 +453,29 @@ class Screen:
         role = role_of(line, self.rules)
         return self.c(getattr(self.theme, role), line) if role else line
 
-    def output(self, text):
-        """What a program printed, line by line, each colored by its meaning (files and logs stay plain)."""
-        for r in str(text).split("\n"):
-            self.out("    " + self.paint(r) if r.strip() else "")
+    def highlight(self, text, rules=None):
+        """The text with only what each rule catches colored (rules = [(regex, Theme role)], the first wins; default
+        self.rules); file names come before words. Without colors (a pipe, a log) the text as it is."""
+        out = []
+        for line in ANSI.sub("", str(text)).split("\n"):
+            if not self.colors:
+                out.append(line)
+                continue
+            parts, pos = [], 0
+            for a, b, role in spans(line, self.rules if rules is None else rules):
+                code = getattr(self.theme, role, None)
+                parts += [line[pos:a], self.c(code, line[a:b]) if code else line[a:b]]
+                pos = b
+            out.append("".join(parts) + line[pos:])
+        return "\n".join(out)
 
-    def live(self, line, keep=10):
+    def output(self, text, rules=None):
+        """What a program printed, line by line, each colored by its meaning (files and logs stay plain); with
+        rules, only what they catch (highlight())."""
+        for r in str(text).split("\n"):
+            self.out("    " + (self.paint(r) if rules is None else self.highlight(r, rules)) if r.strip() else "")
+
+    def live(self, line, keep=10, rules=None):
         """A line of a program while it runs: in full screen it scrolls under the current step, colored by its
         meaning, and only the last `keep` stay; returns False (nothing shown) elsewhere, where the output comes
         back to the caller at the end."""
@@ -401,7 +486,8 @@ class Screen:
             while self.live_n >= keep:
                 del self.body[-self.live_n]
                 self.live_n -= 1
-            self.body.append(self.dim("  " + self.theme.attach + " ") + self.paint(line))
+            self.body.append(self.dim("  " + self.theme.attach + " ")
+                             + (self.paint(line) if rules is None else self.highlight(line, rules)))
             self.live_n += 1
         self.draw()
         return True

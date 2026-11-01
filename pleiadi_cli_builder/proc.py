@@ -164,7 +164,7 @@ def _on_hangup(*_):
     raise KeyboardInterrupt  # the terminal closed: the program in its own group would keep running otherwise
 
 
-def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=None):
+def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=None, rules=None):
     """Like run, but every line of the program (also the \\r ones of progress bars) goes into the open spinner
     line, with the percentage when the line has one. Returns (exit code, output).
     show = in full screen the last lines also scroll live under the current step, colored by their meaning, like
@@ -172,6 +172,8 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
     log = a file path: the whole output goes there (secrets masked); what comes back is only the error lines, the
     last line and where the log is — long builds don't flood the screen (or Claude's context).
     on_line = a function called with each line (without colors, secrets masked) as it arrives.
+    rules = [(regex, Theme role)] (e.g. term.GIT_RULES): on screen only what they catch is colored (the log and what
+    comes back stay plain); with log= they also say which lines are errors, before the generic RULES.
     Ctrl+C stops the program and everything it started (its own process group) and raises Interrupted, which says
     what may be left half-done. The program has no terminal of its own: one that asks something goes in
     run(..., interactive=True)."""
@@ -213,7 +215,7 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
             logf.write(t + "\n")  # the log stays without colors
         if on_line:
             on_line(t)
-        if screen and screen.live(t, show):
+        if screen and screen.live(t, show, rules):
             shown += 1
         pc = re.search(r"(\d{1,3})(?:[.,]\d+)?\s?%", t)
         progress(int(pc.group(1)) / 100 if pc and int(pc.group(1)) <= 100 else None, t)
@@ -253,7 +255,7 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
     if shown > show:
         screen.out(screen.dim("    " + screen.t["more_lines"].format(n=shown - show) + (f" · log: {log}" if log else "")))
     if log:
-        errors = [t for t in out if role_of(t) == "error"][-20:]
+        errors = [t for t in out if role_of(t, list(rules or []) + RULES) == "error"][-20:]
         tail = [out[-1]] if out and out[-1] not in errors else []
         return code, "\n".join(errors + tail + [f"log: {log}"])
     return code, "\n".join(out)
