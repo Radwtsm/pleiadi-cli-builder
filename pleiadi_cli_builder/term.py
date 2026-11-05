@@ -825,6 +825,13 @@ class Screen:
         self.out(self.acc(self.theme.step) + " " + self.bold(text) + self.dim(count + (f" · {why}" if why else "")))
         self.attached = True
 
+    def _question(self, question, default=""):
+        """The «? question» lines wrapped to the text width: a full screen cuts every line at the window edge."""
+        lines = [w for r in question.split("\n") for w in
+                 textwrap.wrap(r, self.text_width() - 4, break_on_hyphens=False, break_long_words=False) or [""]]
+        rows = [("  " + self.acc("?") + " " if i == 0 else "    ") + self.bold(r) for i, r in enumerate(lines)]
+        return "\n".join(rows) + (self.dim(f" [{default}]") if default else "")
+
     def _indent(self):
         r = f"  {self.theme.attach} " if self.attached else "    "
         self.attached = False
@@ -1138,8 +1145,9 @@ class Screen:
         keys = list(keys or [])
         short = list(short) if short else [getattr(o, "short", None) for o in options]
         self.out("")
-        self.out("  " + self.acc("?") + " " + self.bold(question))
-        asked = len(self.body) - 1
+        q = self._question(question)
+        self.out(q)
+        asked = len(self.body) - q.count("\n") - 1
         if header:
             self.out(self._menu_header(header, len(options)))
         if self.colors and stdin_tty():
@@ -1268,7 +1276,7 @@ class Screen:
     def _type(self, question, default):
         """A typed answer in full screen: typed into the fixed status line at the bottom."""
         self.out("")
-        self.out("  " + self.acc("?") + " " + self.bold(question) + self.dim(f" [{default}]" if default else ""))
+        self.out(self._question(question, default))
         text = ""
         self.mode = "type"
         sys.stdout.write("\033[?25h")

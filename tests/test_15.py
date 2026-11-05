@@ -33,6 +33,17 @@ class Layout(unittest.TestCase):
         self.assertEqual(got[-3], "riga 49")
         self.assertEqual(got[-2], "─" * 80)
 
+    def test_long_question_wraps_instead_of_being_cut(self):
+        s = screen([])
+        s.logo = ()
+        question = "Cancello e ricreo uno, due (due: condiviso con gli altri progetti sulla porta 3308): " \
+                   "i dati dentro si perdono. Scrivi uno per confermare:"
+        s.body = s._question(question, "x").split("\n")
+        got = plain(s.layout(80, 40))[1:-2]
+        self.assertGreater(len(got), 1)
+        self.assertTrue(all(len(r) <= 80 and "…" not in r for r in got), got)
+        self.assertEqual(" ".join(r.strip() for r in got), "? " + question + " [x]")
+
     def test_logo_beside_the_information(self):
         got = plain(screen().layout(80, 24))
         self.assertTrue(any("▄█▄" in r and "Prova" in r for r in got), got)
