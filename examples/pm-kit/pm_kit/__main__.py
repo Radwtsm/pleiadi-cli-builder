@@ -16,7 +16,7 @@ La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file.
 (o `pm-kit impostazioni NOME VALORE`), senza toccare il file; «Rifai da capo» riparte da una preparazione pulita.
 Novità: cosa ho visto di ogni mia task (ora di aggiornamento, stato, scadenza, fatto, priorità, assegnatario; niente
 titoli né testi) sta in viste.json accanto alle copie locali: ● nella lista finché non la apro."""
-import datetime, os, shlex, shutil, urllib.error, zipfile
+import datetime, os, shlex, shutil, time, urllib.error, zipfile
 
 from pleiadi_cli_builder import (KEEP, App, HTTPError, ReadOnlyClient, Setting, Step, copy_to_clipboard, credentials,
                                  edit_settings, install_launcher, pin_step, read_json, run, run_steps, secret,
@@ -320,6 +320,22 @@ def allegati(screen, args):
     return 0
 
 
+def refresh_mine(screen, cfg):
+    """Opening a task already needs the VPN: in the same window the copy of my tasks is downloaded again, if there is
+    one and it is older than «aggiorna_ogni_minuti» (the list shows the states of now, no Aggiorna by hand). A copy
+    still recent, or none at all, is left alone; a failure only says so, the task is shown anyway."""
+    keep = bool(cfg.get("copia_locale"))
+    old = read_json(os.path.join(app.cache_dir, "mie.json")) if keep else app._memory.get("mie")
+    limit = cfg.get("aggiorna_ogni_minuti", 2) * 60
+    if not isinstance(old, dict) or time.time() - old.get("at", 0) < limit:
+        return
+    try:
+        app.snapshot("mie", lambda: with_key(screen, cfg, lambda t: redmine.fetch_mine(client(cfg, t))),
+                     refresh=True, keep=keep, screen=screen)
+    except ERRORS as e:
+        screen.todo(f"lista delle tue task non aggiornata ({why(e)}): Aggiorna la riprova")
+
+
 @app.command("issue", args="NUMERO", help="una task nel dettaglio: campi, descrizione, note, relazioni, allegati",
              menu=None, effects=False, json=True, example=["101"])
 def issue_cmd(screen, args):
@@ -337,6 +353,7 @@ def issue_cmd(screen, args):
                 api = client(cfg, t)
                 return redmine.fetch_issue(api, number) + ((me or (api.get("/users/current.json") or {}).get("user")),)
             issue, statuses, me = with_key(screen, cfg, read)
+        refresh_mine(screen, cfg)  # the VPN is still open: the list comes back up to date (owner 06/11)
     except HTTPError as e:
         return failed(screen, f"Task {number} non trovata (o non visibile per te)" if e.status == 404 else why(e), {})
     except ERRORS as e:

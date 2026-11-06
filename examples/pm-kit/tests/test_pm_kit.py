@@ -462,6 +462,34 @@ class Commands(unittest.TestCase):
         code, out, err = quiet(lambda: app.main(["issue", "abc"]))
         self.assertEqual(code, 2)
 
+    def test_opening_a_task_brings_an_old_list_up_to_date(self):
+        """Owner 06/11: opening a task already uses the VPN, so the list of my tasks comes back fresh too."""
+        quiet(lambda: app.main(["mie", "--json"]))
+        old = ISSUES[0]
+        ISSUES[0] = dict(old, status={"name": "Risolta", "is_closed": False}, updated_on=D(0) + "T08:00:00Z")
+        try:
+            FakeRedmine.paths.clear()
+            code, out, err = quiet(lambda: app.main(["issue", "101", "--json"]))  # the copy is a moment old: left alone
+            self.assertEqual(code, 0, err)
+            self.assertEqual([p for p in FakeRedmine.paths if "assigned_to_id" in p], [])
+            code, out, err = quiet(lambda: app.main(["mie", "--json"]))
+            self.assertEqual({t["id"]: t["stato"] for t in json.loads(out)}[101], "In corso")
+            app._memory["mie"]["at"] -= 3600  # an hour later
+            code, out, err = quiet(lambda: app.main(["issue", "101", "--json"]))
+            self.assertEqual(code, 0, err)
+            code, out, err = quiet(lambda: app.main(["mie", "--json"]))  # no --aggiorna
+            self.assertEqual({t["id"]: t["stato"] for t in json.loads(out)}[101], "Risolta")
+        finally:
+            ISSUES[0] = old
+
+    def test_a_failed_list_refresh_still_shows_the_task(self):
+        quiet(lambda: app.main(["mie", "--json"]))
+        app._memory["mie"]["at"] -= 3600
+        with mock.patch("pm_kit.redmine.fetch_mine", side_effect=urllib.error.URLError("giù")):
+            code, out, err = quiet(lambda: app.main(["issue", "101"]))
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("non aggiornata", " ".join(out.split()))
+
     def test_setup_keeps_hand_written_entries(self):
         cfg = os.environ["PM_KIT_CONFIG"]
         with open(cfg, "w") as f:
