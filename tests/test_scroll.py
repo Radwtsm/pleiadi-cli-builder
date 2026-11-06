@@ -29,10 +29,11 @@ class View(unittest.TestCase):
         v = view(50)
         v.key("pgup", 10)
         self.assertTrue(v.open)
-        self.assertEqual(v.window(10), [f"r{i}" for i in range(31, 41)])  # taller while reading back
+        # taller while reading back; the first page is from what was shown (keep=3), not from the taller view
+        self.assertEqual(v.window(10), [f"r{i}" for i in range(38, 48)])
         for i in range(50, 170):
             v.add(f"r{i}")
-        self.assertEqual(v.window(10), [f"r{i}" for i in range(31, 41)])  # the same lines, not moved
+        self.assertEqual(v.window(10), [f"r{i}" for i in range(38, 48)])  # the same lines, not moved
         self.assertEqual(v.new, 120)
         v.key("end", 10)
         self.assertFalse(v.open)
@@ -96,13 +97,14 @@ class OnScreen(unittest.TestCase):
         s.live_scroll(True)
         self.assertIn("PgUp PgDn scroll", s.body[-1])
         self.assertEqual(s.body[-2].split()[-1], "39")
-        s.live_key("pgup")
+        s.live_key("pgup")  # reading back is over everything said (Screen.history), drawn by visible()
         for i in range(40, 52):
             s.live(f"line {i}", keep=4)
-        self.assertIn("↓ 12 new lines", s.body[-1])
-        self.assertNotIn("line 51", "\n".join(s.body))
+        shown = s.visible(10)
+        self.assertIn("↓ 12 new lines", "\n".join(shown[-2:]))
+        self.assertNotIn("line 51", "\n".join(shown))
         s.live_key("end")
-        self.assertNotIn("new lines", s.body[-1])
+        self.assertNotIn("new lines", "\n".join(s.visible(10)))
         self.assertEqual(s.body[-2].split()[-1], "51")
         s.live_scroll(False)  # the program ended: its last lines, no keys line
         self.assertEqual([b.split()[-1] for b in s.body[1:]], ["48", "49", "50", "51"])
