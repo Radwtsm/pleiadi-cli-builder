@@ -35,6 +35,18 @@ class Highlight(unittest.TestCase):
         self.assertLess(plain(line).index(" d  scarica"), plain(line).index("↑↓ scorri"))
         self.assertEqual(line.count(f"\033[{s.theme.shortcut}m"), 2)
 
+    def test_narrow_line_keeps_search_and_the_way_out(self):
+        s = colored()
+        orders = ["↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · n successiva · q chiudi",
+                  "q/Esc chiudi · / cerca · Tab sezione · ↑↓ PgSu PgGiù scorri · Spazio apre/chiude"]
+        for nav in orders:  # whatever the order, what goes is by kind: arrows first, search and the way out stay
+            with mock.patch("shutil.get_terminal_size", lambda *a: os.terminal_size((50, 24))):
+                line = plain(s.shortcut_line(nav, {}))
+            self.assertIn("/ cerca", line, nav)
+            self.assertIn("chiudi", line, nav)
+            self.assertNotIn("scorri", line, nav)
+            self.assertLessEqual(len(line), 49, nav)
+
     def test_views_split_their_own_keys(self):
         p = Pager(detail({"d": ("scarica allegati", lambda s: "ok")}), width=60, height=12)
         self.assertNotIn("scarica", p.nav())

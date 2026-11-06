@@ -125,6 +125,19 @@ def pairs(hint):
     return out
 
 
+def key_rank(keys):
+    """How much a key of a bottom line matters when the line must get shorter: the arrows go first (everybody tries
+    them), then the others, then search (/), last the way out (q, Esc, Ctrl+C)."""
+    parts = set(re.split(r"[/ ]", keys)) - {""}
+    if parts & {"q", "Esc", "Ctrl+C", "^C"}:
+        return 3
+    if keys.strip() == "/":
+        return 2
+    if keys.startswith(("↑", "↓", "←", "→")) or parts & {"PgUp", "PgDn", "PgSu", "PgGiù", "Home", "End", "Inizio", "Fine"}:
+        return 0
+    return 1
+
+
 def duration(seconds):
     """12.3 → "12 s", 125 → "2:05", 0.4 → "0.4 s"."""
     s = round(seconds)
@@ -895,18 +908,17 @@ class Screen:
         actions = {key: (label, …)}."""
         w, nav = shutil.get_terminal_size((80, 24)).columns, pairs(nav)
         chips = [(k, a[0]) for k, a in actions.items()]
-        while True:  # too long: the generic keys after the first go, in order (the later ones — search, the way out —
-            # matter more: like hint_read_short), then the operations
+        while True:  # too long: the keys go by kind, not by place (each tool orders them its own way)
             ctx = self.keys(chips, context=True)
             line = (ctx + self.dim(" · ") if ctx else "") + self.keys(nav)
-            if visible_len(line) + 1 <= w or len(nav) < 2 and not chips:
+            if visible_len(line) + 1 <= w:
                 break
-            if len(nav) > 2:
-                nav.pop(1)
+            if len(nav) > 2 or not chips and len(nav) > 1:
+                nav.pop(min(range(len(nav)), key=lambda i: (key_rank(nav[i][0]), -i)))
             elif chips:
                 chips.pop()
             else:
-                nav.pop()
+                break
         return " " * max(0, min(2, w - visible_len(line))) + line
 
     def hint_line(self):
