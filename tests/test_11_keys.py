@@ -49,7 +49,7 @@ class MenuLetters(unittest.TestCase):
         s.full = True
         keys = iter(["m"])
         with mock.patch.object(term, "key", lambda: next(keys)), mock.patch.object(term.Screen, "open", lambda self: None), \
-                mock.patch.object(term.Screen, "draw", lambda self: None), mock.patch("sys.stdin.isatty", lambda: True):
+                mock.patch.object(term.Screen, "draw", lambda self: None), mock.patch.object(term, "stdin_tty", lambda: True):
             self.assertEqual(s.choose("Cosa?", ["Prepara", "Le mie task", "Esci"], keys=["s", "m", "q"]), 1)
 
     def test_row_shows_the_letter(self):

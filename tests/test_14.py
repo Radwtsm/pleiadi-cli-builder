@@ -47,7 +47,7 @@ class Logic(unittest.TestCase):
         s = app.screen()
         s.choose = lambda q, o, keys=None, start=0, header=None, esc=None: starts.append(start) or next(answers)
         s.ask = lambda *a: ""
-        with unittest.mock.patch("sys.stdin.isatty", lambda: True), redirect_stdout(io.StringIO()):
+        with unittest.mock.patch("pleiadi_cli_builder.app.stdin_tty", lambda: True), redirect_stdout(io.StringIO()):
             app.menu(s)
         self.assertEqual(starts, [0, 2])
 

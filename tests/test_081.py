@@ -68,7 +68,7 @@ class MenuAfterSetup(unittest.TestCase):
         done = []
         app.command("setup", menu="Setup")(lambda s, a: done.append("setup"))
         with mock.patch.object(App, "menu", lambda self, screen: done.append("menu") or 0), \
-             mock.patch("sys.stdin.isatty", lambda: True), \
+             mock.patch("pleiadi_cli_builder.app.stdin_tty", lambda: True), \
              mock.patch("pleiadi_cli_builder.term.Screen.ask", lambda self, q, d="": ""):  # «Enter for the menu»
             buf = io.StringIO()
             with redirect_stdout(buf):
