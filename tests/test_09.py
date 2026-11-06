@@ -35,28 +35,45 @@ class CurrentSection(unittest.TestCase):
         p.handle("end")
         cur = [plain(l) for l in p.lines() if plain(l).startswith("▶")]
         self.assertEqual(len(cur), 1)
-        self.assertNotIn("Descrizione", cur[0])  # scrolled past it: the mark moved on
+        top = p.owner[p.top] or p.owner[p.top + 1]
+        on_screen = [p.d.sections[n][0] for n, h in enumerate(p.heads) if p.top <= h < p.top + p.rows()]
+        self.assertTrue(p.d.sections[p.cur][0] in on_screen or p.d.sections[p.cur][0] == top,
+                        "the mark is on screen, or on the section being read at the top")
 
-    def test_at_the_bottom_the_arrows_pick_the_sections_below(self):
-        """Owner 06/11: scrolled to the bottom, the folded notes below could not be picked with the arrows."""
+    def test_the_arrows_go_item_by_item(self):
+        """Owner 06/11: «2 volte freccia giù dovrebbe scorrere 2 voci», not scroll the page and then, at the bottom,
+        pick the next one; the folded notes at the end are reached the same way."""
         sections = [("Descrizione", [(f"riga {i}", None) for i in range(15)])] + \
                    [(f"Nota {i}", [("testo", None)] * 6, i >= 3) for i in range(10)]
         p = Pager(Detail("Task 7", sections=sections), width=60, height=24)
         marked = lambda: p.d.sections[p.cur][0]
-        p.handle("end")
-        self.assertEqual(p.top, p.max_top())
-        self.assertEqual(marked(), "Nota 2")  # the first title on screen, as before
-        seen = {marked()}
+        p.handle("down")
+        p.handle("down")
+        self.assertEqual(marked(), "Nota 1")  # two items down, whatever their length
+        title = [plain(l) for l in p.render()].index("▶ ▾ Nota 1")
+        self.assertGreater(title, 0)  # on screen
         for _ in range(20):
             p.handle("down")
-            seen.add(marked())
         self.assertEqual(marked(), "Nota 9")  # the last one, and it stays there
-        self.assertTrue({f"Nota {i}" for i in range(3, 10)} <= seen, "every folded note below was marked on the way")
         p.handle(" ")
-        self.assertIn("▶ ▾ Nota 9", [plain(l) for l in p.lines()])
-        bottom = p.top
-        p.handle("up")  # the page can scroll up again: the arrow scrolls it
-        self.assertEqual(p.top, bottom - 1)
+        self.assertIn("▶ ▾ Nota 9", [plain(l) for l in p.render()])
+        p.handle("up")
+        self.assertEqual(marked(), "Nota 8")
+        self.assertIn("▶ ▸ Nota 8 (6 righe)", [plain(l) for l in p.render()])
+
+    def test_a_long_item_is_read_with_page_down_and_the_page_does_not_jump(self):
+        sections = [("Descrizione", [(f"riga {i}", None) for i in range(60)]), ("Nota", [("testo", None)])]
+        p = Pager(Detail("Task 7", sections=sections), width=60, height=24)
+        p.handle("pgdn")
+        self.assertGreater(p.top, 0)
+        self.assertEqual(p.d.sections[p.cur][0], "Descrizione")  # still reading it
+        short = Pager(detail(), width=60, height=40)  # everything fits: ↓ moves the mark, not the page
+        short.handle("down")
+        self.assertEqual(short.top, 0)
+        report = Pager(Detail("Report", sections=[("righe", [(f"riga {i}", None) for i in range(60)])]), 60, 24)
+        report.handle("down")  # one long text: nothing to pick, the arrows scroll it as before
+        self.assertEqual(report.top, 1)
+        self.assertTrue(report.nav().startswith("↑↓ PgSu PgGiù scorri"))
 
     def test_at_the_top_up_goes_back_to_the_first_section(self):
         p = Pager(detail(), width=60, height=40)  # everything fits: the arrows only move the mark
@@ -77,7 +94,8 @@ class Actions(unittest.TestCase):
         self.assertEqual(p.handle("d"), ("action", "d"))
         self.assertIsNone(p.handle("x"))
         self.assertIn("d scarica allegati", p.hint())
-        self.assertIn("Tab", p.hint())
+        self.assertIn("↑↓ voce", p.hint())
+        self.assertIn("PgSu PgGiù scorri", p.hint())
 
 
 class Clipboard(unittest.TestCase):

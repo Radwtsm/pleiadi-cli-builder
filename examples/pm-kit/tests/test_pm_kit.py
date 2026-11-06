@@ -483,12 +483,35 @@ class Commands(unittest.TestCase):
             ISSUES[0] = old
 
     def test_a_failed_list_refresh_still_shows_the_task(self):
+        """Owner 06/11: a line cut halfway (IncompleteRead, not an OSError) hid the task already downloaded."""
+        import http.client
+        for boom in (urllib.error.URLError("giù"), http.client.IncompleteRead(b"x" * 10, 500)):
+            quiet(lambda: app.main(["mie", "--json"]))
+            app._memory["mie"]["at"] -= 3600
+            with mock.patch("pm_kit.redmine.fetch_mine", side_effect=boom):
+                code, out, err = quiet(lambda: app.main(["issue", "101"]))
+            self.assertEqual(code, 0, out + err)
+            self.assertIn("Home page", out)  # the task
+            self.assertIn("non aggiornata", " ".join(out.split()))
+
+    def test_the_task_is_shown_before_the_list_is_downloaded(self):
+        """Owner 06/11: the list downloaded first made the task wait ~22 s."""
         quiet(lambda: app.main(["mie", "--json"]))
         app._memory["mie"]["at"] -= 3600
-        with mock.patch("pm_kit.redmine.fetch_mine", side_effect=urllib.error.URLError("giù")):
+        order = []
+        real_detail, real_mine = term.Screen.detail, redmine.fetch_mine
+        with mock.patch.object(term.Screen, "detail", lambda s, d: (order.append("task"), real_detail(s, d))[1]), \
+             mock.patch("pm_kit.redmine.fetch_mine", lambda api: (order.append("lista"), real_mine(api))[1]):
             code, out, err = quiet(lambda: app.main(["issue", "101"]))
         self.assertEqual(code, 0, out + err)
-        self.assertIn("non aggiornata", " ".join(out.split()))
+        self.assertEqual(order, ["task", "lista"])
+
+    def test_a_cut_line_is_said_plainly(self):
+        import http.client
+        with mock.patch("pm_kit.redmine.fetch_mine", side_effect=http.client.IncompleteRead(b"x" * 10, 500)):
+            code, out, err = quiet(lambda: app.main(["mie", "--aggiorna"]))
+        self.assertEqual(code, 1)
+        self.assertIn("interrotta a metà", " ".join((out + err).split()))
 
     def test_setup_keeps_hand_written_entries(self):
         cfg = os.environ["PM_KIT_CONFIG"]

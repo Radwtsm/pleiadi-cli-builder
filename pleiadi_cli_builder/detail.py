@@ -136,18 +136,30 @@ class Pager:
             self.top = min(self.heads[self.cur], self.max_top())
 
     def _follow(self):
-        """After scrolling: if the marked title left the screen, mark the first title on screen (or below it)."""
+        """After PgUp/PgDn/Home/End: if the marked title left the screen, mark the first title on screen (the mark
+        stays in view); with no title on screen, the section being read (so ↓ goes to the one after it, none skipped)."""
         self.lines()
         if not self.heads or self.top <= self.heads[self.cur] < self.top + self.rows():
             return
-        after = [n for n, h in enumerate(self.heads) if h >= self.top]
-        self.cur = after[0] if after else len(self.heads) - 1
+        shown = [n for n, h in enumerate(self.heads) if self.top <= h < self.top + self.rows()]
+        if shown:
+            self.cur = shown[0]
+            return
+        line = next((i for i in range(self.top, len(self.owner)) if self.owner[i] is not None), self.heads[-1])
+        self.cur = max(n for n, h in enumerate(self.heads) if h <= line)
 
-    def _step_mark(self, step):
-        """↑↓ when the page can't scroll any more (at the bottom or the top): the mark to the section below/above,
-        so the folded ones at the end can be picked without Tab. Everything there is already on screen."""
-        if self.d.sections:
-            self.cur = max(0, min(len(self.d.sections) - 1, self.cur + step))
+    def _step(self, step):
+        """↑↓: the mark to the section below/above (it stops at the first and the last), and the page follows only as
+        much as needed: a section already whole on screen doesn't move it, otherwise its title goes to the top."""
+        if len(self.d.sections) < 2:  # one long text (a report): nothing to pick, the arrows scroll its lines
+            self.top = max(0, min(self.max_top(), self.top + step))
+            return
+        self.cur = max(0, min(len(self.d.sections) - 1, self.cur + step))
+        self.lines()
+        head = self.heads[self.cur]
+        end = self.heads[self.cur + 1] - 1 if self.cur + 1 < len(self.heads) else len(self.owner)
+        if head < self.top or end > self.top + self.rows():
+            self.top = min(head, self.max_top())
 
     def _next_new(self, step):
         """n/N without a search: to the next/previous new line (round), with its section title in view."""
@@ -165,7 +177,8 @@ class Pager:
             n = f"n/N nuove\u00a0{at}"
         else:
             n = "n successiva"
-        return f"↑↓ PgSu PgGiù scorri · Tab sezione · Spazio apre/chiude · / cerca · {n} · q chiudi"
+        arrows = "↑↓ voce · PgSu PgGiù scorri" if len(self.d.sections) > 1 else "↑↓ PgSu PgGiù scorri"
+        return f"{arrows} · Spazio apre/chiude · / cerca · {n} · q chiudi"
 
     def hint(self):
         acts = " · ".join(f"{k} {label}" for k, (label, _) in self.d.actions.items())
@@ -190,14 +203,12 @@ class Pager:
     def handle(self, k):
         """One key → "quit", "search" (the caller asks the text, then search()), or None."""
         page = max(1, self.rows() - 1)
-        moves = {"up": -1, "down": 1, "pgup": -page, "pgdn": page, "k": -1, "j": 1}
         if k in self.d.actions:
             return ("action", k)
-        if k in moves:
-            top = max(0, min(self.max_top(), self.top + moves[k]))
-            if top == self.top and k in ("up", "down", "k", "j"):
-                self._step_mark(moves[k])
-            self.top = top
+        if k in ("up", "down", "k", "j"):  # one item at a time (owner 06/11): twice ↓ = two items down
+            self._step(1 if k in ("down", "j") else -1)
+        elif k in ("pgup", "pgdn"):  # the text of a long item
+            self.top = max(0, min(self.max_top(), self.top + (page if k == "pgdn" else -page)))
             self._follow()
         elif k in ("home", "g"):
             self.top = 0

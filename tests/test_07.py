@@ -34,9 +34,7 @@ class PagerLogic(unittest.TestCase):
     def test_scroll_keys(self):
         p = Pager(sample(), width=60, height=10)
         self.assertEqual(p.top, 0)
-        p.handle("down")
-        self.assertEqual(p.top, 1)
-        p.handle("pgdn")
+        p.handle("pgdn")  # PgDn scrolls the text; ↑↓ go item by item (test_09)
         self.assertGreater(p.top, 1)
         p.handle("end")
         self.assertEqual(p.top, p.max_top())

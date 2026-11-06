@@ -16,7 +16,7 @@ La chiave API sta nel portachiavi del sistema (chiesta una volta), mai nel file.
 (o `pm-kit impostazioni NOME VALORE`), senza toccare il file; «Rifai da capo» riparte da una preparazione pulita.
 Novità: cosa ho visto di ogni mia task (ora di aggiornamento, stato, scadenza, fatto, priorità, assegnatario; niente
 titoli né testi) sta in viste.json accanto alle copie locali: ● nella lista finché non la apro."""
-import datetime, os, shlex, shutil, time, urllib.error, zipfile
+import datetime, http.client, os, shlex, shutil, time, urllib.error, zipfile
 
 from pleiadi_cli_builder import (KEEP, App, HTTPError, ReadOnlyClient, Setting, Step, copy_to_clipboard, credentials,
                                  edit_settings, install_launcher, pin_step, read_json, run, run_steps, secret,
@@ -28,7 +28,7 @@ app = App("pm-kit", title="PM kit", accent="#4a6cf7", menu_subtitle="i progetti 
 SERVICE = "pm-kit.redmine"
 ASK_KEY = "Chiave API di Redmine (Il mio account → Chiave API; Invio vuoto = dagli appunti):"
 KEY_FORMAT = r"[0-9a-fA-F]{40}"  # Redmine API keys: 40 hex characters
-ERRORS = (HTTPError, urllib.error.URLError, OSError, RuntimeError)
+ERRORS = (HTTPError, urllib.error.URLError, OSError, RuntimeError, http.client.HTTPException)  # IncompleteRead: a cut line
 COPIES = ("redmine", "mie")  # the two local copies: everything (PM) and my tasks
 
 
@@ -59,6 +59,8 @@ def why(e):
     if isinstance(e, HTTPError):
         return {401: f"HTTP 401: chiave API sbagliata o scaduta (rifai `{app.cmd('setup')}`)",
                 403: "HTTP 403: la tua utenza non vede questi dati"}.get(e.status, str(e))
+    if isinstance(e, http.client.HTTPException):
+        return "la risposta di Redmine si è interrotta a metà (rete o VPN instabile): riprova"
     return (f"Redmine non risponde ({getattr(e, 'reason', e)}): VPN accesa? indirizzo giusto? "
             f"(`{app.cmd('impostazioni')}`)")
 
@@ -321,18 +323,19 @@ def allegati(screen, args):
 
 
 def refresh_mine(screen, cfg):
-    """Opening a task already needs the VPN: in the same window the copy of my tasks is downloaded again, if there is
-    one and it is older than «aggiorna_ogni_minuti» (the list shows the states of now, no Aggiorna by hand). A copy
-    still recent, or none at all, is left alone; a failure only says so, the task is shown anyway."""
+    """After a task was read (owner 06/11): the copy of my tasks downloaded again, if there is one and it is older
+    than «aggiorna_ogni_minuti», so the list shows the states of now without Aggiorna by hand. In the menu the VPN is
+    still open from the task. A copy still recent, or none at all, is left alone; any failure only says so."""
     keep = bool(cfg.get("copia_locale"))
     old = read_json(os.path.join(app.cache_dir, "mie.json")) if keep else app._memory.get("mie")
     limit = cfg.get("aggiorna_ogni_minuti", 2) * 60
     if not isinstance(old, dict) or time.time() - old.get("at", 0) < limit:
         return
     try:
-        app.snapshot("mie", lambda: with_key(screen, cfg, lambda t: redmine.fetch_mine(client(cfg, t))),
-                     refresh=True, keep=keep, screen=screen)
-    except ERRORS as e:
+        with vpn(cfg, screen), screen.wait("aggiorno la lista delle tue task"):
+            app.snapshot("mie", lambda: with_key(screen, cfg, lambda t: redmine.fetch_mine(client(cfg, t))),
+                         refresh=True, keep=keep, screen=screen)
+    except (ERRORS + (ValueError,)) as e:
         screen.todo(f"lista delle tue task non aggiornata ({why(e)}): Aggiorna la riprova")
 
 
@@ -353,7 +356,6 @@ def issue_cmd(screen, args):
                 api = client(cfg, t)
                 return redmine.fetch_issue(api, number) + ((me or (api.get("/users/current.json") or {}).get("user")),)
             issue, statuses, me = with_key(screen, cfg, read)
-        refresh_mine(screen, cfg)  # the VPN is still open: the list comes back up to date (owner 06/11)
     except HTTPError as e:
         return failed(screen, f"Task {number} non trovata (o non visibile per te)" if e.status == 404 else why(e), {})
     except ERRORS as e:
@@ -364,6 +366,7 @@ def issue_cmd(screen, args):
     screen.detail(d)
     if was is not None and str(issue["id"]) in was or (issue.get("assigned_to") or {}).get("id") == (me or {}).get("id"):
         mark_seen([issue])  # opened = seen: its ● goes away
+    refresh_mine(screen, cfg)  # after the task, never before it: no wait to open it, no failure that hides it
     return 0
 
 
