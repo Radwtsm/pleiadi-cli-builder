@@ -143,6 +143,12 @@ class Pager:
         after = [n for n, h in enumerate(self.heads) if h >= self.top]
         self.cur = after[0] if after else len(self.heads) - 1
 
+    def _step_mark(self, step):
+        """↑↓ when the page can't scroll any more (at the bottom or the top): the mark to the section below/above,
+        so the folded ones at the end can be picked without Tab. Everything there is already on screen."""
+        if self.d.sections:
+            self.cur = max(0, min(len(self.d.sections) - 1, self.cur + step))
+
     def _next_new(self, step):
         """n/N without a search: to the next/previous new line (round), with its section title in view."""
         self.lines()
@@ -188,7 +194,10 @@ class Pager:
         if k in self.d.actions:
             return ("action", k)
         if k in moves:
-            self.top = max(0, min(self.max_top(), self.top + moves[k]))
+            top = max(0, min(self.max_top(), self.top + moves[k]))
+            if top == self.top and k in ("up", "down", "k", "j"):
+                self._step_mark(moves[k])
+            self.top = top
             self._follow()
         elif k in ("home", "g"):
             self.top = 0
