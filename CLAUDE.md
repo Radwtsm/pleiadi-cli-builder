@@ -15,7 +15,10 @@ percorsi privati, mai codice o dati di chi la usa (un tool aziendale vive nel re
   versione sta solo in `__version__` di `__init__.py` (pyproject la legge da lì; `release.py` e
   `tests/test_version.py` rifiutano altrimenti).
 - Output pensato anche per Claude (che legge ogni riga a token): righe brevi, ✓/✗ con cosa fare, un riepilogo;
-  i dati con `--json`. Mai log interi a schermo: l'ultima riga utile, il resto in un file.
+  i dati con `--json`. Comando esplicito (a righe): mai schermo muto, l'output dei programmi dal vivo e mai meno del
+  programma lanciato da solo, niente formati macchina nascosti (contratto, `live_problems`); a schermo intero le
+  ultime righe e il resto si scorre; `log=` lo tiene anche in un file e restituisce solo l'utile.
+- Un programma, una dipendenza o un passo a mano nuovo → Setup del README nello stesso task (`readme_problems`).
 - Colori per ruolo, come Claude Code (`Theme`, mai codici scritti a mano fuori da lì): un solo accento per ciò che è
   interattivo o selezionato; `dim` per il secondario (bordi, note, descrizioni dei tasti); `ok`/`warn`/`error`
   solo per un significato. Riga selezionata = barra su tutta la larghezza (`select`); nei suggerimenti il tasto in

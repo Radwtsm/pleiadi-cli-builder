@@ -2,7 +2,7 @@
 usage generated from the commands; state kept per computer in ~/.config/<name>/state.json (never secrets)."""
 import json, os, re, sys, textwrap, time
 
-from . import access, proc
+from . import access, proc, term
 from .term import MAC, WIN, Label, Screen, Theme, stdin_tty
 
 HELP = {"it": ("comandi", "senza argomenti: il menu", "Cosa vuoi fare?", "Esci", "Invio per tornare al menu",
@@ -412,6 +412,7 @@ class App:
         screen.timings, screen.outcome = {}, False
         section = c.fn.__defaults__ and isinstance(c.fn.__defaults__[-1], App)  # a section's menu, not an action
         started, outcome, code = self.clock(), "error", 1
+        term.ACTIVE.append(screen)  # run_live writes into it also in lines (an explicit command)
         try:
             drop = (DRY_FLAGS if c.dry else ()) + REFRESH_FLAGS + (JSON_FLAG,)
             try:
@@ -442,6 +443,8 @@ class App:
                 self.save_state(timings=every)
             return code
         finally:
+            if screen in term.ACTIVE:
+                term.ACTIVE.remove(screen)
             if self.timings and not section and not screen.dry:
                 self._record_timing(c.name, self.clock() - started, outcome, code)
             screen.read_only = screen.dry = screen.json = screen.refresh = False

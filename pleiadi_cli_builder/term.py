@@ -27,7 +27,7 @@ TEXTS = {
            "bad_number": "serve un numero (0 o più)",
            "unknown_setting": "Impostazione «{key}» sconosciuta. Ci sono: {keys}",
            "settings_cli": "cambiarle: nel menu, oppure `impostazioni NOME VALORE` («-» = predefinito) · file: {path}",
-           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra",
+           "phase": "Fase", "now": "Ora", "before": "Prima", "change": "Differenza", "total": "Totale", "done": "fatto", "failed": "non riuscito (codice {code})", "debug": "dettagli: {env}=1", "more_lines": "… altre {n} righe sopra", "still": "… ancora in corso: {cmd} ({time})",
            # compact mode (Screen.compact): the same keys in fewer words
            "hint_short": "↑↓ Invio scegli · ^C esci", "hint_back_short": "↑↓ Invio scegli · Esc torna · ^C esci",
            "hint_type_short": "Invio conferma · ^C esci", "hint_read_short": "↑↓ scorri · / cerca · q chiudi",
@@ -55,7 +55,7 @@ TEXTS = {
            "bad_number": "a number is needed (0 or more)",
            "unknown_setting": "Unknown setting «{key}». There are: {keys}",
            "settings_cli": "to change them: in the menu, or `settings NAME VALUE` («-» = default) · file: {path}",
-           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above",
+           "phase": "Phase", "now": "Now", "before": "Before", "change": "Change", "total": "Total", "done": "done", "failed": "failed (exit code {code})", "debug": "details: {env}=1", "more_lines": "… {n} more lines above", "still": "… still running: {cmd} ({time})",
            "hint_short": "↑↓ Enter choose · ^C quit", "hint_back_short": "↑↓ Enter choose · Esc back · ^C quit",
            "hint_type_short": "Enter confirm · ^C quit", "hint_read_short": "↑↓ scroll · / search · q close",
            "interrupted": "interrupted: `{cmd}` stopped after {time} with everything it had started",
@@ -414,6 +414,9 @@ def role_of(line, rules=None):
 
 SCREENS = []  # the open full screen (one): run(interactive=True) suspends it for programs that talk by themselves
 LIVE = []  # the open status line (Screen.wait): long functions report progress into it without printing
+ACTIVE = []  # the screen of the running command (App.call), full or in lines: run_live writes into it
+HEARTBEAT = 30.0  # seconds of silence after which a running program or wait says it is still going (never a mute screen)
+LAST_OUT = [0.0]  # when a line last went to the screen in line mode (the heartbeat reads it)
 
 
 SECRETS = set()  # values read with secret() in this run: never in arguments, masked in every output
@@ -544,7 +547,11 @@ class Screen:
     def out(self, line=""):
         line = mask(line)
         if not self.full:
-            print(line, file=sys.stderr if self.json else sys.stdout)  # --json: stdout only for the data
+            if LIVE and self.colors:  # the spinner's line goes away first, it redraws itself under this one
+                sys.stderr.write("\r\033[K")
+                sys.stderr.flush()
+            print(line, file=sys.stderr if self.json else sys.stdout, flush=True)  # --json: stdout only for the data
+            LAST_OUT[0] = time.time()
             return
         self.open()
         self.stay = False
@@ -586,9 +593,13 @@ class Screen:
     def live(self, line, keep=10, rules=None, limit=500, draw=True):
         """A line of a program while it runs: in full screen it scrolls under the current step, colored by its
         meaning (with rules: only what they catch), and only the last `keep` stay in view; up to `limit` are kept to
-        scroll back to (live_scroll). Returns False (nothing shown) elsewhere, where the output comes back to the
-        caller at the end. draw=False: the caller draws once for many lines."""
-        if not self.full or keep <= 0:
+        scroll back to (live_scroll); returns True. In lines (an explicit command, a pipe, Claude) every line is
+        printed at once, whatever `keep` — never less than the program run alone — and it returns False.
+        draw=False: the caller draws once for many lines."""
+        if not self.full:
+            self.output(line, rules)
+            return False
+        if keep <= 0:
             return False
         self.open()
         with self.lock:
@@ -1355,7 +1366,16 @@ class Wait:
         if s.full:
             s.open()
         elif not s.colors:
-            print("    … " + self.text, file=sys.stderr)  # stdout stays for the data
+            print("    … " + self.text, file=sys.stderr, flush=True)  # stdout stays for the data
+            LAST_OUT[0] = time.time()
+
+            def beat():  # nobody sees a spinner here: a line every HEARTBEAT seconds of silence
+                while not self.stop.wait(min(1.0, HEARTBEAT / 4)):
+                    if time.time() - LAST_OUT[0] >= HEARTBEAT:
+                        print(f"    … {self.text} ({duration(time.time() - self.start)})", file=sys.stderr, flush=True)
+                        LAST_OUT[0] = time.time()
+            self.thread = threading.Thread(target=beat, daemon=True)
+            self.thread.start()
             return self
 
         def spin():
@@ -1384,6 +1404,6 @@ class Wait:
             if self.s.full:
                 self.s.foot = ""
                 self.s.draw()
-            else:
+            elif self.s.colors:
                 sys.stderr.write("\r\033[K")
                 sys.stderr.flush()

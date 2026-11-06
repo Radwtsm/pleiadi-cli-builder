@@ -1,13 +1,15 @@
 """Running other programs: captured, interactive (the person answers), or live into the spinner line."""
 import os, queue, re, signal, subprocess, sys, threading, time
 
-from .term import SCREENS, SECRETS, WIN, duration, key_ready, mask, progress, role_of, RULES
+from . import term
+from .term import LIVE, SCREENS, SECRETS, WIN, duration, key_ready, mask, progress, role_of, RULES
 
 # Windows: from a detached background run every child would flash a black console window
 NO_WINDOW: dict = {"creationflags": 0x08000000} if WIN else {}
 # set by App.call for the running command: the programs that write, and whether writing is forbidden now
 POLICY = {"write_commands": [], "read_only": False, "dry": False}
 REFUSED = []  # what check() refused in this run (the contract tests read it)
+RUNS = []  # the programs run in this run: {"cmd": [...], "live": bool, "lines": [...]} (the contract tests read it)
 
 
 class PolicyError(RuntimeError):
@@ -50,6 +52,7 @@ def run(*cmd, cwd=None, timeout=300, interactive=False, env=None):
                     tty.close()
                 if screen:
                     screen.resume()
+        RUNS.append({"cmd": [str(a) for a in cmd], "live": False, "lines": []})
         r = subprocess.run(list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd,
                            timeout=timeout, env=env, **NO_WINDOW)
         return r.returncode, mask((r.stdout + r.stderr).strip())
@@ -168,12 +171,15 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
              scrollback=500):
     """Like run, but every line of the program (also the \\r ones of progress bars) goes into the open spinner
     line, with the percentage when the line has one. Returns (exit code, output).
+    In lines (an explicit command, a pipe, Claude: the screen of the running command is not full) every line is
+    printed as it arrives, never less than the program run alone — so don't print the output again afterwards — and
+    after HEARTBEAT (term, 30 s) without a line «… still running: cmd (time)»: never a mute screen.
     show = in full screen the last lines also scroll live under the current step, colored by their meaning, like
     Claude Code (0: only the spinner line); at the end what didn't fit is counted. Meanwhile the keys scroll them
     (↑↓ PgUp PgDn Home End, the wheel): scrolled up the view stays put and counts the new lines, End follows again;
     the last `scrollback` lines are kept. Ctrl+C works all the time.
-    log = a file path: the whole output goes there (secrets masked); what comes back is only the error lines, the
-    last line and where the log is — long builds don't flood the screen (or Claude's context).
+    log = a file path: the whole output goes there too (secrets masked); what comes back is only the error lines,
+    the last line and where the log is — in full screen only the last `show` lines are on screen.
     on_line = a function called with each line (without colors, secrets masked) as it arrives.
     rules = [(regex, Theme role)] (e.g. term.GIT_RULES): on screen only what they catch is colored (the log and what
     comes back stay plain); with log= they also say which lines are errors, before the generic RULES.
@@ -181,7 +187,10 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
     what may be left half-done. The program has no terminal of its own: one that asks something goes in
     run(..., interactive=True)."""
     check(cmd)
-    screen = SCREENS[-1] if SCREENS else None
+    screen = SCREENS[-1] if SCREENS else (term.ACTIVE[-1] if term.ACTIVE else None)
+    record = {"cmd": [str(a) for a in cmd], "live": True, "lines": []}
+    RUNS.append(record)
+    name = mask(" ".join(os.path.basename(str(a)) if i == 0 else str(a) for i, a in enumerate(cmd)))
     scroll = bool(screen and show > 0 and screen.full and screen.interactive)  # the keys are ours: the program gets no stdin
     try:
         p = subprocess.Popen(list(cmd), cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -216,6 +225,7 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
         if not t:
             return
         out.append(t)
+        record["lines"].append(t)
         if log:
             logf.write(t + "\n")  # the log stays without colors
         if on_line:
@@ -248,14 +258,17 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
                     k = key_ready(0 if got else 0.05)
                     if k:
                         screen.live_key(k)
+                if not eof and screen and not screen.full and not (LIVE and screen.colors) and \
+                        time.time() - max(term.LAST_OUT[0], t0) >= term.HEARTBEAT:  # no spinner moving: say it
+                    short = name if len(name) <= 60 else name[:59] + "…"
+                    screen.out(screen.dim("    " + screen.t["still"].format(cmd=short, time=duration(time.time() - t0))))
                 if not eof and time.time() > end:
                     stop_tree(p)
                     out.append("timeout")
                     break
         except KeyboardInterrupt:
             stop_tree(p)
-            raise Interrupted(mask(" ".join(os.path.basename(str(a)) if i == 0 else str(a) for i, a in enumerate(cmd))),
-                              time.time() - t0, out[-1] if out else "", log) from None
+            raise Interrupted(name, time.time() - t0, out[-1] if out else "", log) from None
         except BaseException:  # on_line failed, or anything else: nothing keeps running behind us
             stop_tree(p)
             raise

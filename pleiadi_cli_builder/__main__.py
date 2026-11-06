@@ -45,7 +45,8 @@ if __name__ == "__main__":
     main()
 '''
 
-CONTRACT = '''"""Le regole generali come test: --prova non scrive niente, --json dà JSON, niente codice caricato a runtime."""
+CONTRACT = '''"""Le regole generali come test: --prova non scrive niente, --json dà JSON, mai schermo muto, l'output dei
+programmi dal vivo, il Setup nel README, niente codice caricato a runtime."""
 import os, sys, unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,6 +57,26 @@ Contract = tests(app)
 
 if __name__ == "__main__":
     unittest.main()
+'''
+
+README = '''# {name}
+
+{title}: cosa c'è e cosa manca su questo computer, e lo prepara.
+
+## Setup
+
+Serve Python 3.8 o più recente, poi:
+
+- `git` (https://git-scm.com): lo usa per i repository;
+- `rm`: c'è già su Mac e Linux.
+
+```bash
+python3 -m {pkg} setup
+```
+
+`setup` si può rilanciare: salta quello che è già fatto. Solo i controlli: `python3 -m {pkg} doctor`.
+Un programma, una dipendenza o un passo a mano in più = una riga qui, nello stesso task (lo controlla
+`tests/test_contract.py`).
 '''
 
 HOOK = '''#!/bin/sh
@@ -82,14 +103,15 @@ def new(screen, args):
         screen.todo(f"Esiste già: {path}")
         return 1
     if screen.dry:
-        screen.info(f"farei: {path} con setup e doctor, tests/test_contract.py, .githooks/pre-commit")
+        screen.info(f"farei: {path} con setup e doctor, README.md con il Setup, tests/test_contract.py, .githooks/pre-commit")
         return 0
     os.makedirs(os.path.dirname(path))
     open(os.path.join(folder, pkg, "__init__.py"), "w").close()
     title = name.replace("-", " ").title()
     files = {path: TEMPLATE.format(name=name, title=title),
              os.path.join(folder, "tests", "test_contract.py"): CONTRACT.format(pkg=pkg),
-             os.path.join(folder, ".githooks", "pre-commit"): HOOK.format()}
+             os.path.join(folder, ".githooks", "pre-commit"): HOOK.format(),
+             os.path.join(folder, "README.md"): README.format(name=name, title=title, pkg=pkg)}
     for p, text in files.items():
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8", newline="\n") as f:

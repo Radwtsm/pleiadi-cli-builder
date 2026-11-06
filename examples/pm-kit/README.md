@@ -4,6 +4,17 @@ Un tool completo fatto con pleiadi-cli-builder: i progetti in lavorazione su **q
 segue. Solo lettura (`ReadOnlyClient` ha solo GET), chiave API nel portachiavi, VPN aperta solo per scaricare,
 un'istantanea dei dati (`--aggiorna` per riscaricarla), tabella o `--json`.
 
+## Setup
+
+Serve Python 3.8 o più recente (nient'altro da installare) e un Redmine con l'API REST attiva; la VPN, se serve,
+con i suoi programmi (`vpn` nella configurazione, `doctor` controlla che esistano).
+
+1. `pm-kit.pyz` dalla release, con il suo sha256 (README della libreria, «pm-kit su un altro computer»).
+2. `python3 pm-kit.pyz installa`: il comando `pm-kit` in `~/.local/bin`.
+3. `pm-kit setup`: indirizzo, utente, chiave API (nel portachiavi), cartella degli allegati. Si può rilanciare.
+
+## Comandi
+
 | Comando | Cosa mostra |
 |---|---|
 | `pm-kit setup` | chiede indirizzo e utente (file JSON) e la chiave API (portachiavi); si può rilanciare |

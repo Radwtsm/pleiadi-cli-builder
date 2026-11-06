@@ -53,14 +53,14 @@ Cosa c'è:
 | `temporary` | `access.py` | un accesso riservato (VPN, tunnel, credenziale elevata) aperto solo per l'operazione e chiuso sempre, anche se fallisce; lascia aperto ciò che era già aperto |
 | `ReadOnlyClient` | `webapi.py` | client JSON per API web (tracker, CI, wiki) che ha solo GET: non può cambiare niente, qualunque permesso abbia il token. Pagine, nuovi tentativi, token in un'intestazione, CA interna (`ca_file`) o impronta del certificato fissata con scadenza (`pin_sha256` + `pin_expires`), mai la verifica spenta |
 | `write_commands` / `PolicyError` | `app.py`, `proc.py` | i programmi che cambiano qualcosa (`App(write_commands=[["git", "push"], ["rm"]])`): `run()` li rifiuta nei comandi di sola lettura e con `--prova`. Un segreto letto con `secret()` non può finire negli argomenti di un programma (si passa con `env=`) ed è mascherato `••••` in ogni output |
-| `contract.tests(app)` | `contract.py` | i test che ogni tool riceve gratis: `--prova` in una HOME vuota non scrive niente; ogni comando, con i colori e nessuno alla tastiera, non solleva eccezioni né mostra traceback, chiude ogni passo col suo ✓/✗, finisce con un esito colorato e un codice di uscita coerente (0 ⇔ nessun ✗; `ux_problems`, `PCB_COLORS=1`), non applica passi e non lancia comandi di scrittura; `--json` dà JSON valido (comandi con `json=True`); il codice non carica codice a runtime (`exec`, `eval`, `importlib`, `runpy`): la configurazione si legge solo come JSON con `app.config()` |
+| `contract.tests(app)` | `contract.py` | i test che ogni tool riceve gratis: `--prova` in una HOME vuota non scrive niente; ogni comando, con i colori e nessuno alla tastiera, non solleva eccezioni né mostra traceback, chiude ogni passo col suo ✓/✗, finisce con un esito colorato e un codice di uscita coerente (0 ⇔ nessun ✗; `ux_problems`, `PCB_COLORS=1`), non applica passi e non lancia comandi di scrittura; `--json` dà JSON valido (comandi con `json=True`); il codice non carica codice a runtime (`exec`, `eval`, `importlib`, `runpy`): la configurazione si legge solo come JSON con `app.config()`. Comandi espliciti (`live_problems`): mai schermo muto (al massimo `term.HEARTBEAT`, 30 s, senza una riga), ogni riga dei programmi lanciati con `run_live` a schermo dal vivo, nessun formato macchina aggiunto di nascosto (`--xml`, `--json`, `--porcelain`, `--quiet`…), nessun comando di scrittura con l'output nascosto (`run` invece di `run_live`), ogni passo dice cosa fa e com'è andato. Setup (`readme_problems`): un README.md accanto al tool con una sezione Setup che nomina ogni programma di `write_commands` |
 | voci di menu in un pty (`contract.tests(app, screens=True)`) | `contract.py`, `screentest.py` | ogni voce del menu (anche dentro le sezioni) aperta dal menu in un vero terminale con una HOME vuota (primo avvio fatto) e `--prova`, a 60×20, 80×24, 120×40 e ridimensionata: `problems()` vuoto e «Tool › Voce» sullo schermo; un test per voce, si scrive da sé; le quattro misure girano insieme; su Windows (niente pty) i test si saltano. `run_screen` accetta anche una funzione al posto della riga di comando (gira nel processo figlio) |
 | `fake_programs({nome: uscita})` | `fakes.py` | programmi finti per i test: per la durata del `with` script in testa al PATH che rispondono sempre uguale (es. `"git": "git version 2.45.0"`, `"msbuild": ("Build FAILED.", 1)`), argomenti ignorati, uscita 0 o il codice scelto; così i flussi pensati per un altro computer si provano ovunque. `sh` su Mac/Linux, `.cmd` su Windows (lì un `.cmd` si lancia col percorso: `fake.path(nome)` o `shutil.which`); dopo il PATH torna com'era e la cartella sparisce |
 | `segreti` / `scan` | `scan.py` | ricerca di segreti nei file in stage con la sola libreria standard: il pre-commit la usa quando gitleaks manca |
 | `pin_step(client)` | `webapi.py` | passo del doctor: ✗ 30 giorni prima che scada l'impronta fissata |
 | `bundle` / `install_launcher` / `self_update` | `install.py` | un file unico `.pyz` con dentro la libreria, il comando in `~/.local/bin`, l'aggiornamento che sostituisce il file solo se è valido e il suo sha256 corrisponde |
 
-## Provalo su un altro computer (serve solo Python 3.8+)
+## Setup: provalo su un altro computer (serve solo Python 3.8+)
 
 Un file solo, dalla release su GitHub; prima di aprirlo controlla che l'impronta sia quella pubblicata accanto.
 
@@ -194,6 +194,12 @@ L'ultima riga prima di `py` deve dire `True`. In un terminale nuovo: `pm-kit set
 - Ogni ✗ dice cosa fare, con il nome esatto di pulsanti e menu.
 - Fuori da un terminale vero (script, CI, Claude) tutto diventa righe semplici e le domande prendono la scelta
   consigliata; `<NOME>_PLAIN=1` o `NO_COLOR` fanno lo stesso a mano.
+- Un comando esplicito non lascia mai lo schermo muto: ogni passo dice cosa fa e com'è andato, l'output dei
+  programmi (`run_live`) si vede dal vivo e mai meno che lanciandoli da soli (a righe: tutte; a schermo intero le
+  ultime, il resto si scorre), niente formati macchina nascosti; dopo 30 s senza righe «… ancora in corso».
+- Un task che aggiunge un programma, una dipendenza o un passo a mano aggiorna il Setup del README nello stesso
+  task (il contratto controlla che ci siano i programmi di `write_commands`); provato su una macchina pulita
+  quando si può.
 - Niente dipendenze: un computer appena acceso deve poter lanciare il tool.
 - Ogni comando dichiara se cambia qualcosa. `effects=False` = solo lettura, imposta dal codice: i suoi passi
   possono solo controllare. Chi ha effetti riceve `--prova` (`--dry-run`): `run_steps` dice cosa farebbe (`plan`)
