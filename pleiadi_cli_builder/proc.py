@@ -165,7 +165,7 @@ def _on_hangup(*_):
 
 
 def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=None, rules=None,
-             scrollback=500):
+             scrollback=500, append=False):
     """Like run, but every line of the program (also the \\r ones of progress bars) goes into the open spinner
     line, with the percentage when the line has one. Returns (exit code, output).
     show = in full screen the last lines also scroll live under the current step, colored by their meaning, like
@@ -173,7 +173,8 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
     (↑↓ PgUp PgDn Home End, the wheel): scrolled up the view stays put and counts the new lines, End follows again;
     the last `scrollback` lines are kept. Ctrl+C works all the time.
     log = a file path: the whole output goes there (secrets masked); what comes back is only the error lines, the
-    last line and where the log is — long builds don't flood the screen (or Claude's context).
+    last line and where the log is — long builds don't flood the screen (or Claude's context). append=True: added
+    after what the file has (the steps of one command in one log), otherwise the file starts over.
     on_line = a function called with each line (without colors, secrets masked) as it arrives.
     rules = [(regex, Theme role)] (e.g. term.GIT_RULES): on screen only what they catch is colored (the log and what
     comes back stay plain); with log= they also say which lines are errors, before the generic RULES.
@@ -205,7 +206,7 @@ def run_live(*cmd, cwd=None, timeout=900, env=None, log=None, show=10, on_line=N
         hangup = {s: signal.signal(s, _on_hangup) for s in (signal.SIGHUP, signal.SIGTERM)}
     if log:
         os.makedirs(os.path.dirname(os.path.abspath(log)), exist_ok=True)
-        logf = open(log, "w", encoding="utf-8", newline="\n")
+        logf = open(log, "a" if append else "w", encoding="utf-8", newline="\n")
     out, rest, t0 = [], b"", time.time()
     end = t0 + timeout
     shown = 0

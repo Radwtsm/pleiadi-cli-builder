@@ -34,8 +34,8 @@ TEXTS = {
            "interrupted": "interrotto: `{cmd}` fermato dopo {time} con tutto ciò che aveva avviato",
            "half_done": "può essere rimasto a metà ciò che faceva, l'ultima riga: «{last}»",
            "half_done_quiet": "può essere rimasto a metà ciò che faceva (non aveva scritto niente)",
-           "hint_live": "↑↓ PgSu PgGiù scorri · Fine segui · Ctrl+C ferma", "new_below": "↓ {n} righe nuove",
-           "new_below_1": "↓ 1 riga nuova", "below": "↓ {n} righe sotto", "below_1": "↓ 1 riga sotto"},
+           "hint_live": "↑↓ PgSu PgGiù scorri · Home inizio · Fine segui · Ctrl+C ferma", "new_below": "↓ {n} righe nuove",
+           "new_below_1": "↓ 1 riga nuova", "below": "↓ {n} righe sotto", "below_1": "↓ 1 riga sotto", "back_down": "Fine per tornare giù"},
     "en": {"hint": "↑↓ choose · Enter confirm · Ctrl+C quit", "hint_resume": "resumes where you left off",
            "hint_idle": "Ctrl+C quit", "hint_back": "↑↓ choose · Enter confirm · Esc back · Ctrl+C quit", "hint_type": "type · Enter confirm · Ctrl+C quit",
            "hint_read": "↑↓ PgUp PgDn scroll · Home/End jump · / search · n next · Space fold · q close",
@@ -61,8 +61,8 @@ TEXTS = {
            "interrupted": "interrupted: `{cmd}` stopped after {time} with everything it had started",
            "half_done": "what it was doing may be left half-done, its last line: «{last}»",
            "half_done_quiet": "what it was doing may be left half-done (it had printed nothing)",
-           "hint_live": "↑↓ PgUp PgDn scroll · End follow · Ctrl+C stop", "new_below": "↓ {n} new lines",
-           "new_below_1": "↓ 1 new line", "below": "↓ {n} lines below", "below_1": "↓ 1 line below"},
+           "hint_live": "↑↓ PgUp PgDn scroll · Home top · End follow · Ctrl+C stop", "new_below": "↓ {n} new lines",
+           "new_below_1": "↓ 1 new line", "below": "↓ {n} lines below", "below_1": "↓ 1 line below", "back_down": "End to go back down"},
 }
 
 # the default logo of the box on top; only blocks every console font has (the classic Windows console too)
@@ -144,14 +144,14 @@ def visible_len(s):
 
 def clip(s, width):
     """A colored line cut to `width` visible columns (color codes don't count), never wrapping."""
-    out, n, i = [], 0, 0
+    out, n, i, over = [], 0, 0, visible_len(s) > width
     while i < len(s):
         m = ANSI.match(s, i)
         if m:
             out.append(m.group(0))
             i = m.end()
             continue
-        if n >= width - 1 and i < len(s) - 1:
+        if over and n >= width - 1:
             out.append("…")
             break
         out.append(s[i])
@@ -199,6 +199,48 @@ def stdin_tty():
         return False
 
 
+VT_KEYS = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down", "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
+           "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[F": "end", "\x1bOF": "end",
+           "\x1b[4~": "end", "\x1b[Z": "backtab", "\t": "tab"}
+WIN_MOUSE = {"saved": None}  # the console mode to give back, see win_mouse
+
+
+def win_mouse(on):
+    """Windows: the console writes the wheel as text only with VT input on, and with Quick Edit on the mouse selects
+    text instead. Off: the mode it had. VT input changes the arrows too: key() reads them either way."""
+    import ctypes
+    console = ctypes.windll.kernel32
+    handle, mode = console.GetStdHandle(-10), ctypes.c_uint32()
+    if on and WIN_MOUSE["saved"] is None and console.GetConsoleMode(handle, ctypes.byref(mode)):
+        WIN_MOUSE["saved"] = mode.value
+        console.SetConsoleMode(handle, (mode.value | 0x0200 | 0x0080) & ~0x0040)  # VT input, extended flags, no Quick Edit
+    elif not on and WIN_MOUSE["saved"] is not None:
+        console.SetConsoleMode(handle, WIN_MOUSE["saved"])
+        WIN_MOUSE["saved"] = None
+
+
+def mouse_mode(on):
+    """The wheel reports on or off: what to write to the terminal."""
+    if WIN:
+        win_mouse(on)
+    return MOUSE_ON if on else MOUSE_OFF
+
+
+def win_escape():
+    """After an Esc on Windows: Esc alone, or the rest of a sequence (VT input on, see win_mouse)."""
+    import msvcrt
+    seq, end = "\x1b", time.time() + 0.05
+    while not msvcrt.kbhit():
+        if time.time() >= end:
+            return "esc"
+        time.sleep(0.001)
+    while msvcrt.kbhit() and len(seq) < 24:
+        seq += msvcrt.getwch()
+        if len(seq) >= 3 and "@" <= seq[-1] <= "~":
+            break
+    return mouse_key(seq.encode()) if seq.startswith("\x1b[<") else VT_KEYS.get(seq, "")
+
+
 def key():
     """One key without Enter: "up", "down", "enter", "backspace" or the character. Ctrl+C raises as usual."""
     if WIN:
@@ -210,7 +252,7 @@ def key():
         if k == "\t":
             return "tab"
         if k == "\x1b":
-            return "esc"
+            return win_escape()
     else:
         import termios, tty
         fd = sys.stdin.fileno()
@@ -240,14 +282,33 @@ def key():
         finally:
             if before is not None:
                 termios.tcsetattr(fd, termios.TCSADRAIN, before)
-        k = {"\x1b[A": "up", "\x1bOA": "up", "\x1b[B": "down", "\x1bOB": "down", "\x1b[5~": "pgup", "\x1b[6~": "pgdn",
-             "\x1b[H": "home", "\x1bOH": "home", "\x1b[1~": "home", "\x1b[F": "end", "\x1bOF": "end",
-             "\x1b[4~": "end", "\x1b[Z": "backtab", "\t": "tab"}.get(k, k)
+        k = VT_KEYS.get(k, k)
     if k == "\x03":
         raise KeyboardInterrupt
     if k in ("\x7f", "\x08"):
         return "backspace"
     return "enter" if k in ("\r", "\n") else k
+
+
+def drain():
+    """Throws away the keys typed before now: an answer counts only once its question is on screen. A Ctrl+C among
+    them still stops."""
+    if not stdin_tty():
+        return
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
+    if msvcrt:
+        while msvcrt.kbhit():
+            if msvcrt.getwch() == "\x03":
+                raise KeyboardInterrupt
+        return
+    try:
+        import termios
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:  # termios.error is not an OSError
+        pass  # stdin without a terminal behind it: nothing typed ahead to throw away
 
 
 def mouse_key(b):
@@ -282,6 +343,9 @@ def key_ready(timeout):
     return key()
 
 
+HISTORY = 5000  # rows kept to read back (Screen.scroll_key): a long build stays whole, the log has everything
+
+
 class LiveView:
     """The lines of a running program as a view that scrolls (no terminal needed: the Screen draws it). At the bottom
     it follows the program and shows the last `keep`; a key up opens it (taller: Screen gives the height) and it stops
@@ -308,6 +372,8 @@ class LiveView:
         elif k == "home":
             self.offset = len(self.lines)
         elif k in self.UP or k in ("pgup", "pgdn"):
+            if k == "pgup" and not self.open:  # the view grows when it opens: a page from what is shown, not from what will be
+                page = max(1, min(self.keep, height, len(self.lines) - self.offset) - 1)
             self.offset += self.UP.get(k) or (page if k == "pgup" else -page)
         else:
             return False
@@ -451,7 +517,7 @@ class Screen:
                 s.reconfigure(encoding="utf-8")
             except (AttributeError, ValueError):
                 pass
-        if WIN and self.colors:  # ANSI colors in the Windows console (VT mode)
+        if WIN and self.colors and sys.stdout.isatty():  # ANSI colors in the Windows console (VT mode)
             try:
                 import ctypes
                 k = ctypes.windll.kernel32
@@ -467,11 +533,15 @@ class Screen:
         self.outcome = False  # the command has said how it ended (done(), summary()): App.call adds one otherwise  # colors by meaning of output(); live lines now at the end of the body
         self.focus, self.over, self.stay = None, False, False  # see visible(), out() and App.menu
         self.logo, self.about, self.rows, self.subtitle = LOGO, None, [], ""  # the box on top: header(), banner()
+        self.relayout = None  # a full view's way to lay itself out again for the size of the moment (draw)
         self.narrow, self.picking = False, None  # compact at the last layout; the open menu's rows (redrawn)
         self.full = self.colors and stdin_tty() and sys.stdout.isatty() and not os.environ.get(plain_env)
         self.refresh, self.mode = False, "idle"  # mode: idle, choose, type, read — the hint follows it
         self.suspended = False
         self.head, self.body, self.foot, self.last = [], [], "", []
+        # one way to read back, whatever runs: everything said, the lines of programs in full, and how far up you are
+        # (rows under the view, 0 = following); new rows while you read are counted (scroll_key, visible)
+        self.history, self.back, self.new, self.room = [], 0, 0, 10
         self.opened, self.lock, self.size, self.attached, self.width = False, threading.RLock(), None, False, 0
 
     @property
@@ -516,7 +586,7 @@ class Screen:
         cbreak(False)
         if self in SCREENS:
             SCREENS.remove(self)
-        sys.stdout.write(MOUSE_OFF + "\033[?25h\033[?1049l")
+        sys.stdout.write(mouse_mode(False) + "\033[?25h\033[?1049l")
         keep = [r for r in (self.last or "\n".join(self.body).strip("\n").split("\n")) if r]
         sys.stdout.write("\n".join(keep) + ("\n" if keep else ""))
         sys.stdout.flush()
@@ -528,7 +598,7 @@ class Screen:
             if CBREAK["depth"] and CBREAK["saved"]:  # the other program gets a normal terminal
                 import termios
                 termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, CBREAK["saved"])
-            sys.stdout.write(MOUSE_OFF + "\033[?25h\033[?1049l")
+            sys.stdout.write(mouse_mode(False) + "\033[?25h\033[?1049l")
             sys.stdout.flush()
 
     def resume(self):
@@ -537,7 +607,7 @@ class Screen:
             import tty
             tty.setcbreak(sys.stdin.fileno())
         if self.opened:
-            sys.stdout.write("\033[?1049h\033[?25l" + (MOUSE_ON if self.scrolling and self.mouse() else ""))
+            sys.stdout.write("\033[?1049h\033[?25l" + (mouse_mode(True) if self.scrolling and self.mouse() else ""))
             self.size = None
             self.draw()
 
@@ -550,11 +620,21 @@ class Screen:
         self.stay = False
         with self.lock:
             if self.over:  # the first thing an action of a full view says replaces that view
-                self.body, self.over = [], False
-            self.body += line.split("\n")
+                self.body, self.over, self.history, self.back, self.new = [], False, [], 0, 0
+            rows = line.split("\n")
+            self.body += rows
             del self.body[:-500]
             self.live_n, self.view = 0, None
+            self._remember(rows)
         self.draw()
+
+    def _remember(self, rows):
+        """Into what you can read back; reading back, the view stays on its rows and the new ones are counted."""
+        self.history += rows
+        if self.back:
+            self.back += len(rows)
+            self.new += len(rows)
+        del self.history[:-HISTORY]
 
     def paint(self, line):
         """A line of a program's output in the color of its meaning (self.rules); as it is without one."""
@@ -595,58 +675,91 @@ class Screen:
             if self.view is None:
                 self.view = LiveView(keep, limit, rules)
             self.view.add(line)
+            self._remember([self._live_line(self.view, line)])  # all of them: on screen only the last `keep`
             self._live_render()
         if draw:
             self.draw()
         return True
 
     def live_scroll(self, on):
-        """While a program runs (run_live): its lines scroll with ↑↓ PgUp PgDn Home End and the wheel, the keys
-        written under them. Wheel: the terminal reports it (mouse mode) on Mac and Linux; PCB_MOUSE=0 leaves the
-        mouse to the terminal (selecting text). Off: back to following, the keys line goes away."""
+        """While a program runs (run_live): the keys written under its lines, and the wheel reported by the terminal
+        (mouse mode; PCB_MOUSE=0 leaves the mouse to the terminal, for selecting text). What the keys move is
+        scroll_key(): everything said, not only this program. Off: the keys line goes; where you were reading stays,
+        so the next step or the end of the command doesn't throw you back down."""
         if not self.opened:
             return
         self.scrolling = on
-        if self.mouse() and not self.suspended:
-            sys.stdout.write(MOUSE_ON if on else MOUSE_OFF)
+        self.wheel(on)
         with self.lock:
             if self.view:
-                if not on:
-                    self.view.offset, self.view.new, self.view.open = 0, 0, False
                 self._live_render()
         self.draw()
 
-    @staticmethod
-    def mouse():
-        """The wheel is asked to the terminal (mouse reports): Mac and Linux, unless PCB_MOUSE=0."""
-        return not WIN and os.environ.get("PCB_MOUSE", "1") != "0"
+    def wheel(self, on):
+        """The wheel as keys (the terminal's mouse reports), also outside a program: the end of a command reads back."""
+        if self.opened and self.mouse() and not self.suspended:
+            sys.stdout.write(mouse_mode(on))
+            sys.stdout.flush()
 
-    def live_key(self, k):
-        """A key while a program runs: True when it moved its lines."""
+    def scroll_key(self, k):
+        """↑↓ PgUp PgDn Home End and the wheel over everything said since the screen was cleared: the steps, their
+        outcomes and every line of the programs, also the ones no longer on screen. End follows again. False for a
+        key that isn't a scroll key, or during a question (its keys are its own)."""
+        if self.focus or not self.full:
+            return False
+        page = max(1, self.room - 3)  # the rows of the view, minus the notice and the keys under it
+        step = {"up": 1, "down": -1, "wheelup": 3, "wheeldown": -3, "pgup": page, "pgdn": -page}
         with self.lock:
-            if not self.view or not self.view.key(k, self._live_room()):
+            if not self.back and self.view:  # following, a program shows only its last lines: a page from those
+                step["pgup"] = max(1, min(page, len(self.view.window())) - 1)
+            if k == "end":
+                back = 0
+            elif k == "home":
+                back = len(self.history)
+            elif k in step:
+                back = self.back + step[k]
+            else:
                 return False
-            self._live_render()
+            self.back = max(0, min(back, len(self.history) - page))
+            self.new = min(self.new, self.back)
         self.draw()
         return True
 
+    @staticmethod
+    def mouse():
+        """The wheel is asked to the terminal (mouse reports), unless PCB_MOUSE=0."""
+        return os.environ.get("PCB_MOUSE", "1") != "0"
+
+    def live_key(self, k):
+        """A key while a program runs: True when it moved the view (scroll_key)."""
+        return self.scroll_key(k)
+
+    def _live_line(self, v, r):
+        return self.dim("  " + self.theme.attach + " ") + (self.paint(r) if v.rules is None else self.highlight(r, v.rules))
+
+    def _back_rows(self, w):
+        """Under the rows read back: how many are below (the count first, always whole) and, while a program runs,
+        the keys."""
+        which = ("new_below" if self.new else "below") + ("_1" if (self.new or self.back) == 1 else "")
+        notice = self.t[which].format(n=self.new or self.back)
+        for full in (f" {notice} · {self.t['back_down']} ", f" {notice} ", notice):
+            if 4 + len(full) <= w:
+                break
+        rows = [" " * max(0, min(4, w - len(full))) + self.c(f"1;7;{self.theme.accent}", full)]
+        return rows + (["    " + self.keys(pairs(self.t["hint_live"]))] if self.scrolling else [])
+
     def _live_room(self):
         """Rows for the lines of the program while you read back: the window under the box, minus the separator,
-        the keys line, its own status line and the step line above."""
+        the keys line, the notice of what is below, its own status line and the step line above."""
         w, h = shutil.get_terminal_size((80, 24))
         head = self.banner(w, h)
-        return max(self.view.keep if self.view else 1, h - (len(head) if h >= len(head) + 8 else 0) - 4)
+        return max(1, h - (len(head) if h >= len(head) + 8 else 0) - 5)
 
     def _live_render(self):
-        v = self.view
-        lines = [self.dim("  " + self.theme.attach + " ") + (self.paint(r) if v.rules is None else self.highlight(r, v.rules))
-                 for r in v.window(self._live_room())]
+        v = self.view  # following: the last `keep`; reading back is visible()'s, over the whole history
+        lines = [self._live_line(v, r) for r in v.window()]
         if self.scrolling:
-            hint = self.keys(pairs(self.t["hint_live"]))
-            if v.offset:
-                which = ("new_below" if v.new else "below") + ("_1" if (v.new or v.offset) == 1 else "")
-                hint = self.acc(self.t[which].format(n=v.new or v.offset)) + self.dim(" · ") + hint
-            lines.append("    " + hint)
+            lines.append("    " + self.keys(pairs(self.t["hint_live"])))
         start = len(self.body) - self.live_n
         self.body[start:] = lines
         self.live_n = len(lines)
@@ -656,6 +769,8 @@ class Screen:
             return
         with self.lock:
             self.size = shutil.get_terminal_size((80, 24))
+            if self.relayout and not self.over:
+                self.relayout(*self.size)
             sys.stdout.write("\033[H" + "\r\n".join(r + "\033[K" for r in self.layout(*self.size)) + "\033[J")
             sys.stdout.flush()
 
@@ -680,9 +795,11 @@ class Screen:
         head = self.banner(w, h)
         head = ([clip(r, w) for r in head] if h >= len(head) + 8 else
                 [clip(head[0], w)] if head and self.narrow and h >= 9 else [])
-        foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or "  " + self.hint_line(), w)]
+        foot = [self.c(self.theme.dim, "─" * w), clip(self.foot or self.hint_foot(w), w)]
         room = max(1, h - len(head) - len(foot))
-        return (head + [clip(r, w) for r in self.visible(room)] + foot)[:h]
+        self.room = room
+        rows = head + [clip(r, w) for r in self.visible(room, w)] + foot
+        return rows[max(0, len(rows) - h):]  # too low: the content goes, the keys stay
 
     def banner(self, w, h):
         """The box on top, always fixed: the logo beside the information when the window has room for it. Compact
@@ -698,9 +815,20 @@ class Screen:
                 for i in range(max(len(logo), len(self.rows)))]
         return self.frame(rows)
 
-    def visible(self, room):
-        """The lines that fit: the last ones; during a question (focus = its line, the selected line) the question
-        stays on top and the selected row stays in view, however low the window."""
+    def visible(self, room, w=80):
+        """The lines that fit: the last ones; read back (scroll_key), the rows of the history where you are, with
+        what is below under them; during a question (focus = its line, the selected line) the question stays on top
+        and the selected row stays in view, however low the window."""
+        if self.focus:
+            self.back = self.new = 0  # a question is answered where it is asked
+        elif self.back:
+            under = self._back_rows(w)
+            n = max(1, room - len(under))
+            self.back = min(self.back, max(0, len(self.history) - n))
+            if self.back:
+                end = len(self.history) - self.back
+                return self.history[max(0, end - n):end] + under
+            self.new = 0
         if not self.focus or len(self.body) <= room:
             return self.body[-room:]
         q, sel = self.focus
@@ -725,6 +853,7 @@ class Screen:
         if self.full:
             with self.lock:
                 self.body, self.live_n, self.view = [], 0, None
+                self.history, self.back, self.new = [], 0, 0
             self.draw()
         elif self.colors:
             sys.stdout.write("\033[2J\033[3J\033[H")
@@ -753,8 +882,20 @@ class Screen:
     def shortcut_line(self, nav, actions):
         """The bottom line of a screen with its own operations: first those (chips), then the generic keys `nav`.
         actions = {key: (label, …)}."""
-        ctx = self.keys([(k, a[0]) for k, a in actions.items()], context=True)
-        return "  " + (ctx + self.dim(" · ") if ctx else "") + self.keys(pairs(nav))
+        w, nav = shutil.get_terminal_size((80, 24)).columns, pairs(nav)
+        chips = [(k, a[0]) for k, a in actions.items()]
+        while True:  # too long: the generic keys between the first and the last go (a way out is at one end), then the operations
+            ctx = self.keys(chips, context=True)
+            line = (ctx + self.dim(" · ") if ctx else "") + self.keys(nav)
+            if visible_len(line) + 1 <= w or len(nav) < 2 and not chips:
+                break
+            if len(nav) > 2:
+                nav.pop(-2)
+            elif chips:
+                chips.pop()
+            else:
+                nav.pop()
+        return " " * max(0, min(2, w - visible_len(line))) + line
 
     def hint_line(self):
         """The bottom line: the keys of this moment, then the open accesses (muted)."""
@@ -762,6 +903,18 @@ class Screen:
         h = self._hint_text()
         st = status_line()
         return self.keys(pairs(h)) + (self.dim(f" · {st}") if st else "")
+
+    def hint_foot(self, w):
+        """hint_line() indented, for a window `w` wide: when it does not fit the first keys go, the way out (the
+        last ones) stays, and the indent shrinks before the last key would be cut."""
+        from .access import status_line
+        items, st = pairs(self._hint_text()), status_line()
+        tail = self.dim(f" · {st}") if st else ""
+        line = self.keys(items) + tail
+        while len(items) > 1 and visible_len(line) + 1 > w:
+            items = items[1:]
+            line = self.keys(items) + tail
+        return " " * max(0, min(2, w - visible_len(line))) + line
 
     # ── colors ──
     def c(self, code, text):
@@ -776,8 +929,8 @@ class Screen:
     def bold(self, text):
         return self.c(self.theme.bold, text)
 
-    def text_width(self):
-        return max(40, min(shutil.get_terminal_size((80, 24)).columns - 1, 100))
+    def text_width(self, floor=40):
+        return max(floor, min(shutil.get_terminal_size((80, 24)).columns - 1, 100))
 
     # ── blocks ──
     def header(self, subtitle=""):
@@ -828,7 +981,7 @@ class Screen:
     def _question(self, question, default=""):
         """The «? question» lines wrapped to the text width: a full screen cuts every line at the window edge."""
         lines = [w for r in question.split("\n") for w in
-                 textwrap.wrap(r, self.text_width() - 4, break_on_hyphens=False, break_long_words=False) or [""]]
+                 textwrap.wrap(r, self.text_width(10) - 4, break_on_hyphens=False, break_long_words=False) or [""]]
         rows = [("  " + self.acc("?") + " " if i == 0 else "    ") + self.bold(r) for i, r in enumerate(lines)]
         return "\n".join(rows) + (self.dim(f" [{default}]") if default else "")
 
@@ -841,13 +994,13 @@ class Screen:
         if "\033" in text:  # already colored: no wrapping computed on the codes
             self.out("    " + text)
             return
-        self.out(textwrap.fill(text, self.text_width(), initial_indent="    ", subsequent_indent="    ",
+        self.out(textwrap.fill(text, self.text_width(10), initial_indent="    ", subsequent_indent="    ",
                                break_on_hyphens=False, break_long_words=False))
 
     def todo(self, text):
         """What the person has to do, with the exact names of buttons and menus."""
         for r in text.split("\n"):
-            lines = textwrap.wrap(r, self.text_width() - 6, break_on_hyphens=False, break_long_words=False) or [""]
+            lines = textwrap.wrap(r, self.text_width(10) - 6, break_on_hyphens=False, break_long_words=False) or [""]
             self.out("    " + self.acc(self.theme.arrow) + " " + lines[0])
             for x in lines[1:]:
                 self.out("      " + x)
@@ -889,13 +1042,13 @@ class Screen:
     def action(self, fn, label, *args):
         """Runs a one-key action of a full view: it may ask (`choose`, `confirm`, `ask`) and wait (`wait`) — what it
         says replaces the view until it ends, then the view comes back. Returns the message; one that fails says why."""
-        self.over = True
+        self.over, relayout, self.relayout = True, self.relayout, None  # its question is not the view's to lay out
         try:
             return fn(*args) or label
         except Exception as e:  # the view stays open
             return f"{label}: {e}"
         finally:
-            self.over = False
+            self.over, self.relayout = False, relayout
 
     def detail(self, d):
         """A Detail (pleiadi_cli_builder.detail): JSON with --json, plain text without a real terminal, otherwise
@@ -912,12 +1065,16 @@ class Screen:
             return
         self.open()
         saved, self.mode = (self.head, self.body), "read"
+
+        def lay(columns, rows):  # rewraps when the window changes, also between two keys
+            pager.resize(columns, rows - 2)
+            self.head, self.body = [], pager.render()
+        self.relayout = lay
+        drain()
         try:
             while True:
-                size = shutil.get_terminal_size((80, 24))
-                pager.resize(size.columns, size.lines - 2)  # rewraps when the window changes
                 with self.lock:
-                    self.head, self.body = [], pager.render()
+                    lay(*shutil.get_terminal_size((80, 24)))
                 self.foot = self.foot or self.shortcut_line(pager.nav(), d.actions)
                 self.draw()
                 what = pager.handle(key())
@@ -942,6 +1099,7 @@ class Screen:
                         key()
                         self.foot = ""
         finally:
+            self.relayout = None
             with self.lock:
                 self.head, self.body = saved
             self.mode, self.stay = "idle", True  # closing it was the answer: no «press Enter» after
@@ -967,17 +1125,21 @@ class Screen:
 
         acting = threading.Event()
 
+        def lay(columns, rows):
+            view.resize(columns, rows - 2)
+            self.head, self.body = [], view.render()
+
         def paint():  # also from the background cells, as each one arrives
             if acting.is_set():
                 return
             with self.lock:
-                size = shutil.get_terminal_size((80, 24))
-                view.resize(size.columns, size.lines - 2)
-                self.head, self.body = [], view.render()
+                lay(*shutil.get_terminal_size((80, 24)))
             self.draw()
         self.open()
         saved, self.mode = (self.head, self.body), "read"
+        self.relayout = lambda columns, rows: None if acting.is_set() else lay(columns, rows)
         b.start(on_change=paint)
+        drain()
         try:
             while True:
                 self.foot = self.foot or self.shortcut_line(view.nav(), b.actions)
@@ -1003,18 +1165,27 @@ class Screen:
                 if what == "quit":
                     return None
         finally:
+            self.relayout = None
             with self.lock:
                 self.head, self.body = saved
             self.mode, self.stay = "idle", True
             self.draw()
 
+    @staticmethod
+    def typed(prefix, text):
+        """What is typed on the bottom line, its end when it is longer than the window: the last letters are the
+        ones being typed."""
+        room = shutil.get_terminal_size((80, 24)).columns - 2 - prefix - 1
+        return text if len(text) <= room else "…" + text[len(text) - max(1, room - 1):]
+
     def _type_line(self, prompt):
         """A short answer typed in the bottom line (the search of the detail view)."""
         text = ""
         sys.stdout.write("\033[?25h")
+        drain()
         try:
             while True:
-                self.foot = "  " + self.acc(prompt) + text
+                self.foot = "  " + self.acc(prompt) + self.typed(len(prompt), text)
                 self.draw()
                 k = key()
                 if k in ("enter", "esc"):
@@ -1147,7 +1318,7 @@ class Screen:
         self.out("")
         q = self._question(question)
         self.out(q)
-        asked = len(self.body) - q.count("\n") - 1
+        asked = len(self.body) - 1
         if header:
             self.out(self._menu_header(header, len(options)))
         if self.colors and stdin_tty():
@@ -1161,7 +1332,7 @@ class Screen:
                                     keys[i] if i < len(keys) else None))
         while True:
             r = self.ask(self.t["type_number"], "1")
-            if r.isdigit() and 1 <= int(r) <= len(options):
+            if r.isascii() and r.isdigit() and 1 <= int(r) <= len(options):
                 return int(r) - 1
             if r and r.lower() in keys:
                 return keys.index(r.lower())
@@ -1213,7 +1384,7 @@ class Screen:
 
         def move(k):
             return ((sel - 1) % n if k == "up" else (sel + 1) % n if k == "down" else
-                    int(k) - 1 if k.isdigit() and 1 <= int(k) <= n else sel)
+                    int(k) - 1 if k.isascii() and k.isdigit() and 1 <= int(k) <= n else sel)
         if self.full:  # the options stay in place; afterwards one line with the answer
             with self.lock:
                 first = len(self.body)
@@ -1221,6 +1392,7 @@ class Screen:
                 self.focus = (asked, first + sel)
                 self.picking = (first, lambda: [row(i, o) for i, o in enumerate(options)])  # redrawn on a resize
             self.draw()
+            drain()
             try:
                 while True:
                     k = key()
@@ -1251,6 +1423,7 @@ class Screen:
             for i, o in enumerate(options):
                 print(row(i, o))
             print(self.dim("    " + self.t["hint"]))
+            drain()
             while True:
                 k = key()
                 if k == "enter":
@@ -1280,9 +1453,10 @@ class Screen:
         text = ""
         self.mode = "type"
         sys.stdout.write("\033[?25h")
+        drain()  # what was typed while the command still worked must not answer a question nobody has seen
         try:
             while True:
-                self.foot = "  " + self.acc(self.theme.prompt + " ") + text
+                self.foot = "  " + self.acc(self.theme.prompt + " ") + self.typed(len(self.theme.prompt) + 1, text)
                 self.draw()
                 k = key()
                 if k == "enter":
@@ -1340,7 +1514,8 @@ class Wait:
             lb = max(6, lb + free)
             free = w - 6 - len(text) - lb - 7 - len(elapsed) - 2
         if free < 0:
-            text = text[:max(8, len(text) + free - 1)] + "…"
+            keep, text = max(8, len(text) + free - 1), text.rsplit(" · ", 1)[-1]  # the last part says how to stop
+            text = text[:keep] + "…"
             free = 0
         det = self.detail if len(self.detail) + 2 <= free else ""
         bar = ""
