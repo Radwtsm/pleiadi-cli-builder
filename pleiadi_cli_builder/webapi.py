@@ -47,6 +47,18 @@ class _PinnedHTTPS(urllib.request.HTTPSHandler):
         return self.do_open(lambda host, **kw: Conn(host, context=ctx, timeout=kw.get("timeout", 30)), req)
 
 
+class _SameOrigin(urllib.request.HTTPRedirectHandler):
+    """Follows a redirect only inside the client's own server: urllib would otherwise send the token header to
+    whatever host (or plain http) the Location names."""
+    def __init__(self, base):
+        self.origin = urllib.parse.urlparse(base)[:2]
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlparse(newurl)[:2] != self.origin:
+            raise urllib.error.URLError(f"redirect to another server refused (the token stays here): {newurl.split('?')[0]}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class ReadOnlyClient:
     """
         api = ReadOnlyClient("https://tracker.example", token=secret("tool.tracker", user, screen),
@@ -69,10 +81,10 @@ class ReadOnlyClient:
         if token:
             self.headers[header] = f"{scheme} {token}".strip()
         if pin_sha256:
-            self.opener = urllib.request.build_opener(_PinnedHTTPS(pin_sha256, pin_expires))
+            https = _PinnedHTTPS(pin_sha256, pin_expires)
         else:
-            ctx = ssl.create_default_context(cafile=ca_file)
-            self.opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))
+            https = urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=ca_file))
+        self.opener = urllib.request.build_opener(https, _SameOrigin(self.base))
 
     def url(self, path, params=None):
         q = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v is not None}, doseq=True)
@@ -96,7 +108,7 @@ class ReadOnlyClient:
                 time.sleep(min(30, float(wait)) if wait.isdigit() else 2 ** attempt)
             except (urllib.error.URLError, socket.timeout, ConnectionError) as e:
                 if isinstance(getattr(e, "reason", None), ssl.SSLError) or isinstance(e, ssl.SSLError) \
-                        or attempt == self.retries:
+                        or "redirect to another server" in str(e) or attempt == self.retries:
                     raise  # a certificate problem doesn't get better by retrying
                 time.sleep(2 ** attempt)
 

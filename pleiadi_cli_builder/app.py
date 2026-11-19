@@ -215,8 +215,10 @@ class App:
             self._memory[name] = snap
             return data, taken
         self._memory.pop(name, None)
-        os.makedirs(self.cache_dir, exist_ok=True)
-        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # created private, not chmod later
+        os.makedirs(self.cache_dir, mode=0o700, exist_ok=True)
+        if os.path.exists(path + ".tmp"):  # O_CREAT keeps the mode of a leftover file
+            os.remove(path + ".tmp")
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)  # created private, not chmod later
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             json.dump(snap, f, ensure_ascii=False)
         os.replace(path + ".tmp", path)

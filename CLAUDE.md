@@ -18,6 +18,8 @@ percorsi privati, mai codice o dati di chi la usa (un tool aziendale vive nel re
   i dati con `--json`. Comando esplicito (a righe): mai schermo muto, l'output dei programmi dal vivo e mai meno del
   programma lanciato da solo, niente formati macchina nascosti (contratto, `live_problems`); a schermo intero le
   ultime righe e il resto si scorre; `log=` lo tiene anche in un file e restituisce solo l'utile.
+- README.md in inglese (vetrina), README.it.md il riferimento completo: un pezzo nuovo va in entrambi.
+- Una difesa nuova o un limite noto → riga in `SECURITY.md` col suo test (`tests/test_security.py`).
 - Un programma, una dipendenza o un passo a mano nuovo → Setup del README nello stesso task (`readme_problems`).
 - Colori per ruolo, come Claude Code (`Theme`, mai codici scritti a mano fuori da lì): un solo accento per ciò che è
   interattivo o selezionato; `dim` per il secondario (bordi, note, descrizioni dei tasti); `ok`/`warn`/`error`
